@@ -1,0 +1,151 @@
+# Configuração do Extrator SPED V3
+# Este arquivo contém todas as configurações do sistema
+
+# Configurações de processamento
+processing:
+  # Tamanho máximo de arquivo em MB
+  max_file_size_mb: 100
+  
+  # Tamanho do chunk para processamento em lote (linhas)
+  chunk_size: 10000
+  
+  # Encoding padrão para arquivos SPED
+  default_encoding: 'latin-1'
+  
+  # Encodings alternativos para tentar em caso de falha
+  fallback_encodings:
+    - 'utf-8'
+    - 'cp1252'
+    - 'iso-8859-1'
+  
+  # Número de bytes para detecção de encoding
+  encoding_sample_bytes: 256000
+  
+  # Tolerância para validação de totais (em reais)
+  validation_tolerance: 0.01
+
+# Configurações de logging
+logging:
+  # Nível de log: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  level: 'INFO'
+  
+  # Formato das mensagens de log
+  format: '%(asctime)s - %(levelname)s - %(message)s'
+  
+  # Formato de data/hora no log
+  date_format: '%Y-%m-%d %H:%M:%S'
+  
+  # Salvar logs em arquivo
+  save_to_file: false
+  
+  # Caminho do arquivo de log (se save_to_file = true)
+  log_file_path: 'sped_extractor.log'
+
+# Configurações de validação
+validation:
+  # Validar CNPJs
+  validate_cnpj: true
+  
+  # Validar formatos de data
+  validate_dates: true
+  
+  # Validar campos obrigatórios
+  validate_required_fields: true
+  
+  # Validar totais cruzados (soma itens vs total documento)
+  validate_cross_totals: true
+  
+  # Validar chaves de NFe
+  validate_nfe_keys: true
+  
+  # Validar CFOPs
+  validate_cfop: true
+  
+  # Modo strict: interrompe processamento em caso de erro de validação
+  strict_mode: false
+
+# Configurações de exportação Excel
+export:
+  # Formato de moeda brasileira
+  currency_format: '_-* "R$" * #,##0.00_-;_-* "R$" * -#,##0.00_-;_-* "R$" * "-"??_-;_-@_-'
+  
+  # Engine do pandas para Excel (openpyxl ou xlsxwriter)
+  excel_engine: 'openpyxl'
+  
+  # Aplicar formatação de moeda automaticamente
+  auto_format_currency: true
+  
+  # Congelar primeira linha (cabeçalhos)
+  freeze_header_row: true
+  
+  # Ajustar largura das colunas automaticamente
+  auto_adjust_columns: false
+
+# Configurações de performance
+performance:
+  # Usar processamento paralelo (experimental)
+  use_parallel_processing: false
+  
+  # Número de workers para processamento paralelo
+  num_workers: 4
+  
+  # Usar cache para conversões repetidas
+  use_conversion_cache: true
+  
+  # Tamanho máximo do cache (número de entradas)
+  max_cache_size: 10000
+
+# Configurações da GUI
+gui:
+  # Título da janela
+  window_title: 'SPED → Excel - Extrator de Contribuições v3.0'
+  
+  # Tamanho da janela (largura x altura)
+  window_size: '800x400'
+  
+  # Mostrar barra de progresso
+  show_progress_bar: true
+  
+  # Atualizar progresso a cada N linhas
+  progress_update_interval: 1000
+  
+  # Nome padrão do arquivo de saída
+  default_output_filename: 'sped_consolidado.xlsx'
+
+# Formatos de data por tipo de registro
+date_formats:
+  C100:
+    DT_DOC: '%Y%m%d'
+    DT_E_S: '%Y%m%d'
+  D100:
+    DT_DOC: '%d%m%Y'
+    DT_A_P: '%d%m%Y'
+  A100:
+    DT_DOC: '%Y%m%d'
+    DT_EXE_SERV: '%Y%m%d'
+  E100:
+    DT_INI: '%Y%m%d'
+    DT_FIN: '%Y%m%d'
+  C500:
+    DT_DOC: '%Y%m%d'
+    DT_ENT: '%Y%m%d'
+  D500:
+    DT_DOC: '%Y%m%d'
+    DT_A_P: '%Y%m%d'
+  D700:
+    DT_DOC: '%Y%m%d'
+    DT_E_S: '%Y%m%d'
+
+# Mapeamento de indicadores
+indicators:
+  IND_OPER:
+    '0': 'Entrada'
+    '1': 'Saída'
+  IND_EMIT:
+    '0': 'Emissão própria'
+    '1': 'Terceiros'
+  IND_FRT:
+    '0': 'Emitente'
+    '1': 'Destinatário/remetente'
+    '2': 'Terceiros'
+    '9': 'Sem cobrança de frete'
