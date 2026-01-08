@@ -2,6 +2,7 @@
 Extrator SPED - Aplicação Web Streamlit
 
 Interface web para processamento de arquivos SPED e exportação para Excel.
+Suporta EFD ICMS/IPI e EFD Contribuições.
 """
 
 import streamlit as st
@@ -13,7 +14,11 @@ import os
 
 # Importa módulos do projeto
 from exceptions import SpedError
-from Extrat_V3 import SpedParser, SpedDataProcessor, GROUPS
+from Extrat_V3 import SpedParser, SpedDataProcessor
+
+# Importa layouts específicos
+from layouts_icms_ipi import LAYOUTS_ICMS_IPI, NUMERIC_COLUMNS_ICMS_IPI, GROUPS_ICMS_IPI
+from layouts_contribuicoes import LAYOUTS_CONTRIBUICOES, NUMERIC_COLUMNS_CONTRIBUICOES, GROUPS_CONTRIBUICOES
 
 # =========================
 # CONFIGURAÇÃO DA PÁGINA
@@ -26,7 +31,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# CSS customizado para melhorar a aparência
+# CSS customizado
 st.markdown("""
 <style>
     .main-header {
@@ -54,6 +59,12 @@ st.markdown("""
         border-radius: 0.5rem;
         border-left: 4px solid #2196F3;
     }
+    .warning-box {
+        padding: 1rem;
+        background-color: #FFF3E0;
+        border-radius: 0.5rem;
+        border-left: 4px solid #FF9800;
+    }
     .stProgress > div > div > div > div {
         background-color: #4CAF50;
     }
@@ -62,18 +73,44 @@ st.markdown("""
 
 
 # =========================
+# FUNCOES AUXILIARES
+# =========================
+
+def detect_efd_type(file_content: bytes) -> str:
+    """Detecta automaticamente o tipo de EFD pelo registro 0000."""
+    try:
+        # Lê primeiras linhas para encontrar registro 0000
+        content = file_content.decode('latin-1', errors='ignore')
+        for line in content.split('\n')[:10]:
+            if '|0000|' in line:
+                parts = line.split('|')
+                if len(parts) > 2:
+                    cod_ver = parts[2] if parts[1] == '0000' else parts[1]
+                    # EFD ICMS/IPI geralmente tem COD_VER como número (ex: 018)
+                    # EFD Contribuições tem COD_VER diferente
+                    # Verificamos também pela estrutura do arquivo
+                    if '|A001|' in content or '|M100|' in content:
+                        return 'CONTRIBUICOES'
+                    return 'ICMS_IPI'
+        return 'ICMS_IPI'  # Default
+    except:
+        return 'ICMS_IPI'
+
+
+def get_layout_config(efd_type: str):
+    """Retorna configuração de layout baseado no tipo de EFD."""
+    if efd_type == 'CONTRIBUICOES':
+        return LAYOUTS_CONTRIBUICOES, NUMERIC_COLUMNS_CONTRIBUICOES, GROUPS_CONTRIBUICOES
+    return LAYOUTS_ICMS_IPI, NUMERIC_COLUMNS_ICMS_IPI, GROUPS_ICMS_IPI
+
+
+# =========================
 # FUNÇÕES DE PROCESSAMENTO
 # =========================
 
-def process_sped_file(uploaded_file) -> dict:
+def process_sped_file(uploaded_file, efd_type: str) -> dict:
     """
     Processa um arquivo SPED e retorna os DataFrames consolidados.
-    
-    Args:
-        uploaded_file: Arquivo carregado via Streamlit
-        
-    Returns:
-        Dicionário com DataFrames consolidados
     """
     # Salva arquivo temporariamente
     with tempfile.NamedTemporaryFile(delete=False, suffix='.txt') as tmp:
@@ -81,29 +118,39 @@ def process_sped_file(uploaded_file) -> dict:
         tmp_path = Path(tmp.name)
     
     try:
-        # Parse do arquivo
+        # Obtém configuração do layout
+        layouts, numeric_cols, groups = get_layout_config(efd_type)
+        
+        # Parse do arquivo (usa layouts padrão do Extrat_V3)
         parser = SpedParser(tmp_path)
         dataframes = parser.parse()
         
         # Converte campos numéricos
         dataframes = SpedDataProcessor.convert_dataframes(dataframes)
         
-        # Consolida grupos
+        # Consolida grupos baseado no tipo de EFD
         consolidated = {}
         
-        for group_name, (parent_code, child_codes, parent_idx, header_idx, header_code) in GROUPS.items():
+        for group_name, group_config in groups.items():
+            parent_code, child_codes, parent_idx, header_idx, header_code = group_config
+            
+            # Verifica se o registro pai existe
+            if parent_code not in dataframes or dataframes[parent_code].empty:
+                continue
+                
             consolidated_df = SpedDataProcessor.consolidate_group(
                 dataframes, parent_code, child_codes, parent_idx
             )
             
             if not consolidated_df.empty:
-                # Anexa cabeçalho
-                consolidated_df = SpedDataProcessor.attach_header(
-                    consolidated_df,
-                    dataframes.get(header_code),
-                    header_idx,
-                    f'{header_code}_'
-                )
+                # Anexa cabeçalho se existir
+                if header_code in dataframes and not dataframes[header_code].empty:
+                    consolidated_df = SpedDataProcessor.attach_header(
+                        consolidated_df,
+                        dataframes.get(header_code),
+                        header_idx,
+                        f'{header_code}_'
+                    )
                 
                 # Remove colunas de índice
                 consolidated_df.drop(
@@ -117,27 +164,17 @@ def process_sped_file(uploaded_file) -> dict:
         return consolidated, parser.metrics
         
     finally:
-        # Limpa arquivo temporário
         if tmp_path.exists():
             os.unlink(tmp_path)
 
 
 def create_excel_download(dataframes: dict) -> bytes:
-    """
-    Cria arquivo Excel em memória para download.
-    
-    Args:
-        dataframes: Dicionário com DataFrames
-        
-    Returns:
-        Bytes do arquivo Excel
-    """
+    """Cria arquivo Excel em memória para download."""
     output = BytesIO()
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         for sheet_name, df in dataframes.items():
             if df is not None and not df.empty:
-                # Limita nome da planilha a 31 caracteres (limite do Excel)
                 safe_name = sheet_name[:31]
                 df.to_excel(writer, sheet_name=safe_name, index=False)
     
@@ -154,31 +191,51 @@ def main():
     st.markdown('<p class="main-header">📊 Extrator SPED</p>', unsafe_allow_html=True)
     st.markdown('<p class="sub-header">Processe arquivos SPED e exporte dados consolidados para Excel</p>', unsafe_allow_html=True)
     
-    # Sidebar com informações
+    # Sidebar
     with st.sidebar:
-        st.header("ℹ️ Sobre")
-        st.markdown("""
-        **Extrator SPED v3.0**
+        st.header("⚙️ Configurações")
         
-        Processa arquivos SPED e consolida os seguintes blocos:
+        # Seletor de tipo EFD
+        efd_type = st.selectbox(
+            "Tipo de EFD",
+            options=["Detectar Automaticamente", "EFD ICMS/IPI (Fiscal)", "EFD Contribuições (PIS/COFINS)"],
+            index=0,
+            help="Selecione o tipo de arquivo EFD ou deixe detectar automaticamente"
+        )
         
-        - **Bloco C**: NFe/NFCe
-        - **Bloco C500**: Energia Elétrica
-        - **Bloco D**: CTe
-        - **Bloco D500**: Telecom
-        - **Bloco D700**: NFCom
-        - **Bloco A**: Serviços
-        - **Bloco F**: Demais Documentos
-        - **Bloco E**: Apuração ICMS
-        """)
+        st.divider()
+        
+        st.header("ℹ️ Blocos Suportados")
+        
+        if efd_type == "EFD Contribuições (PIS/COFINS)":
+            st.markdown("""
+            - **Bloco 0**: Abertura
+            - **Bloco A**: Serviços (ISS)
+            - **Bloco C**: Docs Fiscais (NFe)
+            - **Bloco D**: Transportes
+            - **Bloco F**: Demais Docs
+            - **Bloco M**: Apuração PIS/COFINS
+            """)
+        else:
+            st.markdown("""
+            - **Bloco 0**: Abertura
+            - **Bloco C**: NFe/NFCe
+            - **Bloco D**: CTe
+            - **Bloco E**: Apuração ICMS/IPI
+            - **Bloco G**: CIAP
+            - **Bloco H**: Inventário
+            - **Bloco K**: Produção/Estoque
+            - **Bloco 1**: Outras Info
+            """)
         
         st.divider()
         
         st.header("📋 Instruções")
         st.markdown("""
-        1. Faça upload do arquivo SPED (.txt)
-        2. Aguarde o processamento
-        3. Baixe o Excel com os dados consolidados
+        1. Selecione o tipo de EFD
+        2. Faça upload do arquivo
+        3. Clique em Processar
+        4. Baixe o Excel
         """)
     
     # Área principal
@@ -193,33 +250,43 @@ def main():
         )
         
         if uploaded_file is not None:
-            # Informações do arquivo
             file_size = len(uploaded_file.getvalue()) / 1024
+            
+            # Detecta tipo automaticamente se necessário
+            if efd_type == "Detectar Automaticamente":
+                detected_type = detect_efd_type(uploaded_file.getvalue())
+                type_label = "EFD ICMS/IPI" if detected_type == "ICMS_IPI" else "EFD Contribuições"
+                actual_type = detected_type
+            elif efd_type == "EFD ICMS/IPI (Fiscal)":
+                type_label = "EFD ICMS/IPI"
+                actual_type = "ICMS_IPI"
+            else:
+                type_label = "EFD Contribuições"
+                actual_type = "CONTRIBUICOES"
+            
             st.markdown(f"""
             <div class="info-box">
                 <strong>Arquivo:</strong> {uploaded_file.name}<br>
-                <strong>Tamanho:</strong> {file_size:.1f} KB
+                <strong>Tamanho:</strong> {file_size:.1f} KB<br>
+                <strong>Tipo:</strong> {type_label}
             </div>
             """, unsafe_allow_html=True)
             
             st.divider()
             
-            # Botão de processamento
             if st.button("🚀 Processar Arquivo", type="primary", use_container_width=True):
                 with st.spinner("Processando arquivo SPED..."):
                     try:
-                        # Processa o arquivo
                         progress_bar = st.progress(0, text="Iniciando...")
                         
                         progress_bar.progress(20, text="Parseando arquivo...")
-                        consolidated, metrics = process_sped_file(uploaded_file)
+                        consolidated, metrics = process_sped_file(uploaded_file, actual_type)
                         
                         progress_bar.progress(60, text="Gerando Excel...")
                         excel_bytes = create_excel_download(consolidated)
                         
                         progress_bar.progress(100, text="Concluído!")
                         
-                        # Sucesso
                         st.markdown(f"""
                         <div class="success-box">
                             <h3>✅ Processamento Concluído!</h3>
@@ -247,11 +314,10 @@ def main():
                             stats_df = pd.DataFrame(stats_data)
                             st.dataframe(stats_df, use_container_width=True, hide_index=True)
                         else:
-                            st.warning("Nenhum bloco consolidado encontrado no arquivo.")
+                            st.warning("Nenhum bloco consolidado encontrado.")
                         
                         st.divider()
                         
-                        # Botão de download
                         output_name = uploaded_file.name.replace('.txt', '').replace('.sped', '') + '_consolidado.xlsx'
                         
                         st.download_button(
@@ -272,7 +338,7 @@ def main():
     # Rodapé
     st.divider()
     st.markdown(
-        "<p style='text-align: center; color: #888;'>Extrator SPED v3.0 | Desenvolvido com Streamlit</p>",
+        "<p style='text-align: center; color: #888;'>Extrator SPED v4.0 | Suporte Multi-EFD</p>",
         unsafe_allow_html=True
     )
 
