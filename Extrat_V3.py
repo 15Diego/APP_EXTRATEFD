@@ -572,12 +572,17 @@ def validate_file_path(file_path: Path) -> None:
 class SpedParser:
     """Parser para arquivos SPED."""
     
-    def __init__(self, file_path: Path):
+    def __init__(self, file_path: Path, layouts: Dict[str, List[str]] = None, 
+                 numeric_columns: Dict[str, List[str]] = None,
+                 groups: Dict[str, Tuple[str, List[str], str, str, str]] = None):
         """
         Inicializa o parser.
 
         Args:
             file_path: Caminho do arquivo SPED
+            layouts: Dicionário opcional de layouts por registro.
+            numeric_columns: Dicionário opcional de colunas numéricas por registro.
+            groups: Dicionário opcional de grupos de consolidação.
             
         Raises:
             SpedFileError: Se o arquivo for inválido
@@ -585,7 +590,13 @@ class SpedParser:
         """
         self.file_path = file_path
         self.encoding = detect_encoding(file_path)
-        self.rows: Dict[str, List[List[str]]] = {code: [] for code in LAYOUTS}
+        
+        # Usa configurações externas ou internas
+        self.layouts = layouts if layouts is not None else LAYOUTS
+        self.numeric_columns = numeric_columns if numeric_columns is not None else NUMERIC_COLUMNS
+        self.groups = groups if groups is not None else GROUPS
+        
+        self.rows: Dict[str, List[List[str]]] = {code: [] for code in self.layouts}
         
         # Métricas de processamento
         self.metrics = ProcessingMetrics()
@@ -597,9 +608,72 @@ class SpedParser:
             'd010': -1, 'd100': -1, 'd500': -1, 'd700': -1,
             'a010': -1, 'a100': -1,
             'f010': -1, 'f100': -1,
-            # Índices para o Bloco E (período e apuração)
             'e100': -1, 'e110': -1,
+            'h001': -1, 'h005': -1,
+            'k001': -1, 'k100': -1,
+            'g001': -1, 'g110': -1,
+            'm001': -1, 'm100': -1, 'm500': -1,
+            '0000': -1,
         }
+        
+        # Mapeamento para processamento de índices genéricos
+        # RecordCode -> Lista de ações ({type: increment/read, key: index_key, col: col_name})
+        self.record_actions = {}
+        
+        # Inicializa ações a partir dos grupos
+        for group_info in self.groups.values():
+            parent, children, parent_idx_name, header_idx_name, header = group_info
+            
+            # --- CONFIGURAÇÃO DO PAI ---
+            if parent not in self.record_actions:
+                self.record_actions[parent] = []
+            
+            parent_key = parent.lower()
+            
+            # Pai incrementa seu próprio índice
+            if not any(a['type'] == 'increment' and a['key'] == parent_key for a in self.record_actions[parent]):
+                self.record_actions[parent].append({
+                    'type': 'increment',
+                    'key': parent_key,
+                    'col': parent_idx_name
+                })
+            
+            # Pai lê índice do header (se existir e for diferente)
+            if header and header != parent:
+                header_key = header.lower()
+                if not any(a['type'] == 'read' and a['key'] == header_key for a in self.record_actions[parent]):
+                    self.record_actions[parent].append({
+                        'type': 'read',
+                        'key': header_key,
+                        'col': header_idx_name
+                    })
+            
+            # --- CONFIGURAÇÃO DO HEADER ---
+            if header:
+                if header not in self.record_actions:
+                    self.record_actions[header] = []
+                
+                header_key = header.lower()
+                # Header incrementa seu próprio índice
+                if not any(a['type'] == 'increment' and a['key'] == header_key for a in self.record_actions[header]):
+                    self.record_actions[header].append({
+                        'type': 'increment',
+                        'key': header_key,
+                        'col': header_idx_name
+                    })
+
+            # --- CONFIGURAÇÃO DOS FILHOS ---
+            for child in children:
+                if child not in self.record_actions:
+                    self.record_actions[child] = []
+                
+                # Filho lê índice do pai
+                if not any(a['type'] == 'read' and a['key'] == parent_key for a in self.record_actions[child]):
+                    self.record_actions[child].append({
+                        'type': 'read',
+                        'key': parent_key,
+                        'col': parent_idx_name
+                    })
         
         # Configurações de validação
         self.validate_data = get_config('validation.validate_required_fields', True)
@@ -744,7 +818,8 @@ class SpedParser:
             self._process_e_child(registro, raw_line)
 
         # Registros genéricos (inclui aberturas como C001, D001, A001, F001, M001, E001)
-        elif registro in LAYOUTS:
+        # e quaisquer outros registros definidos nos layouts dinâmicos
+        elif registro in self.layouts:
             self._process_generic(registro, raw_line)
     
     def _process_c010(self, raw_line: str) -> None:
@@ -867,8 +942,24 @@ class SpedParser:
 
         Este método é utilizado para registros de abertura (por exemplo, C001, D001, A001, F001, M001, E001) e
         quaisquer registros definidos em LAYOUTS que não possuam lógica específica.
+        Também aplica lógica de indexação dinâmica se configurada.
         """
         parts = self._pad_line(raw_line, registro)
+        
+        # Aplica ações de indexação dinâmica
+        if registro in self.record_actions:
+            for action in self.record_actions[registro]:
+                key = action['key']
+                if action['type'] == 'increment':
+                    # Garante que o contador existe
+                    if key not in self.indices:
+                        self.indices[key] = -1
+                    self.indices[key] += 1
+                    parts.append(str(self.indices[key]))
+                elif action['type'] == 'read':
+                    val = self.indices.get(key, -1)
+                    parts.append(str(val))
+        
         self.rows[registro].append(parts)
 
     # ======== Bloco C500 ========
@@ -923,7 +1014,10 @@ class SpedParser:
             Lista de campos com padding
         """
         parts = parse_sped_line(raw_line)
-        expected_len = len(LAYOUTS[registro])
+        if registro not in self.layouts:
+            return parts
+            
+        expected_len = len(self.layouts[registro])
         
         # Adiciona campos vazios se necessário
         if len(parts) < expected_len:
@@ -943,7 +1037,8 @@ class SpedParser:
         
         for code, data in self.rows.items():
             if not data:
-                dataframes[code] = pd.DataFrame(columns=LAYOUTS[code])
+                if code in self.layouts:
+                    dataframes[code] = pd.DataFrame(columns=self.layouts[code])
                 continue
             
             # Define colunas baseado no tipo de registro
@@ -962,7 +1057,10 @@ class SpedParser:
         Returns:
             Lista de nomes de colunas
         """
-        base_columns = LAYOUTS[code]
+        if code not in self.layouts:
+            return []
+            
+        base_columns = self.layouts[code]
         
         # Adiciona colunas de índice conforme o tipo
         if code == 'C010':
@@ -1016,6 +1114,11 @@ class SpedParser:
             return base_columns + ['D700_INDEX', 'D010_INDEX']
         
         else:
+            # Tenta usar configuração dinâmica
+            if code in self.record_actions:
+                extra_cols = [action['col'] for action in self.record_actions[code]]
+                return base_columns + extra_cols
+            
             return base_columns
 
 
@@ -1153,7 +1256,8 @@ class SpedDataProcessor:
         dataframes: Dict[str, pd.DataFrame],
         parent_code: str,
         child_codes: List[str],
-        parent_index_col: str
+        parent_index_col: str,
+        numeric_columns: Dict[str, List[str]] = None
     ) -> pd.DataFrame:
         """
         Consolida registros filhos com o registro pai.
@@ -1163,12 +1267,17 @@ class SpedDataProcessor:
             parent_code: Código do registro pai
             child_codes: Lista de códigos dos registros filhos
             parent_index_col: Nome da coluna de índice do pai
+            numeric_columns: Dicionário opcional de colunas numéricas por registro.
+                            Se None, usa NUMERIC_COLUMNS interno.
 
         Returns:
             DataFrame consolidado
         """
         if parent_code not in dataframes or dataframes[parent_code].empty:
             return pd.DataFrame()
+        
+        # Usa colunas numéricas externas ou internas
+        num_cols_map = numeric_columns if numeric_columns is not None else NUMERIC_COLUMNS
         
         result = dataframes[parent_code].copy().reset_index(drop=True)
         
@@ -1178,15 +1287,18 @@ class SpedDataProcessor:
                 continue
             
             # Define agregações
-            numeric_cols = NUMERIC_COLUMNS.get(code, [])
+            numeric_cols = num_cols_map.get(code, [])
             text_cols = [
                 c for c in child.columns
                 if c not in numeric_cols + ['REG', parent_index_col]
             ]
             
-            aggregations = {c: 'sum' for c in numeric_cols}
+            aggregations = {c: 'sum' for c in numeric_cols if c in child.columns}
             for c in text_cols:
                 aggregations[c] = concat_unique_values
+            
+            if not aggregations:
+                continue
             
             # Agrupa e junta
             grouped = child.groupby(parent_index_col).agg(aggregations).add_prefix(f'{code}_')

@@ -121,8 +121,8 @@ def process_sped_file(uploaded_file, efd_type: str) -> dict:
         # Obtém configuração do layout
         layouts, numeric_cols, groups = get_layout_config(efd_type)
         
-        # Parse do arquivo (usa layouts padrão do Extrat_V3)
-        parser = SpedParser(tmp_path)
+        # Parse do arquivo com layouts específicos
+        parser = SpedParser(tmp_path, layouts=layouts, numeric_columns=numeric_cols, groups=groups)
         dataframes = parser.parse()
         
         # Converte campos numéricos
@@ -139,7 +139,8 @@ def process_sped_file(uploaded_file, efd_type: str) -> dict:
                 continue
                 
             consolidated_df = SpedDataProcessor.consolidate_group(
-                dataframes, parent_code, child_codes, parent_idx
+                dataframes, parent_code, child_codes, parent_idx,
+                numeric_columns=numeric_cols
             )
             
             if not consolidated_df.empty:
