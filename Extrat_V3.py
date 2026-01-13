@@ -762,65 +762,10 @@ class SpedParser:
         # Incrementa métrica
         self.metrics.increment_registro(registro)
         
-        # Bloco C
-        if registro == 'C010':
-            self._process_c010(raw_line)
-        elif registro == 'C100':
-            self._process_c100(raw_line)
-        elif registro in ('C170', 'C190', 'C195', 'C197'):
-            self._process_c_child(registro, raw_line)
-        # Bloco C500 e seus filhos
-        elif registro == 'C500':
-            self._process_c500(raw_line)
-        elif registro in ('C501', 'C505'):
-            self._process_c5_child(registro, raw_line)
-        
-        # Bloco D
-        elif registro == 'D010':
-            self._process_d010(raw_line)
-        elif registro == 'D100':
-            self._process_d100(raw_line)
-        elif registro in ('D170', 'D190', 'D101', 'D105'):
-            self._process_d_child(registro, raw_line)
-        # Bloco D500 e seus filhos
-        elif registro == 'D500':
-            self._process_d500(raw_line)
-        elif registro in ('D501', 'D505'):
-            self._process_d5_child(registro, raw_line)
-        # Bloco D700
-        elif registro == 'D700':
-            self._process_d700(raw_line)
-        
-        # Bloco A
-        elif registro == 'A010':
-            self._process_a010(raw_line)
-        elif registro == 'A100':
-            self._process_a100(raw_line)
-        
-        # Bloco F
-        elif registro == 'F010':
-            self._process_f010(raw_line)
-        elif registro == 'F100':
-            self._process_f100(raw_line)
-        elif registro == 'F111':
-            self._process_f_child(registro, raw_line)
-        
-        # Bloco M
-        elif registro in ('M001', 'M100', 'M105', 'M110', 'M115'):
-            self._process_m(registro, raw_line)
-
-        # Bloco E (Fiscal)
-        elif registro == 'E100':
-            self._process_e100(raw_line)
-        elif registro == 'E110':
-            self._process_e110(raw_line)
-        elif registro in ('E111', 'E112', 'E113', 'E115', 'E116'):
-            self._process_e_child(registro, raw_line)
-
-        # Registros genéricos (inclui aberturas como C001, D001, A001, F001, M001, E001)
-        # e quaisquer outros registros definidos nos layouts dinâmicos
-        elif registro in self.layouts:
+        # Processa registro usando layouts dinâmicos
+        if registro in self.layouts:
             self._process_generic(registro, raw_line)
+        # Registros desconhecidos são ignorados (mas já contados na métrica)
     
     def _process_c010(self, raw_line: str) -> None:
         """Processa registro C010."""
