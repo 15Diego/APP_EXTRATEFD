@@ -1301,7 +1301,16 @@ class SpedDataProcessor:
                 continue
             
             # Agrupa e junta
+            # Garante que a coluna de agrupamento seja do mesmo tipo para evitar erros de merge
+            if parent_index_col in child.columns:
+                child[parent_index_col] = child[parent_index_col].astype(str)
+            
             grouped = child.groupby(parent_index_col).agg(aggregations).add_prefix(f'{code}_')
+            
+            # Garante tipo no result também
+            if parent_index_col in result.columns:
+                result[parent_index_col] = result[parent_index_col].astype(str)
+                
             result = result.merge(grouped, how='left', left_on=parent_index_col, right_index=True)
         
         return result
@@ -1334,7 +1343,12 @@ class SpedDataProcessor:
             columns={c: f'{header_prefix}{c}' for c in keep_cols}
         )
         
-        # Faz o merge
+        # Faz o merge e garante tipos compatíveis
+        if parent_header_index_col in df.columns:
+            df[parent_header_index_col] = df[parent_header_index_col].astype(str)
+        if parent_header_index_col in join_df.columns:
+            join_df[parent_header_index_col] = join_df[parent_header_index_col].astype(str)
+            
         merged = df.merge(join_df, how='left', left_on=parent_header_index_col, right_on=parent_header_index_col)
         
         # Reordena colunas (cabeçalho primeiro)
