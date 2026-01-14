@@ -339,7 +339,7 @@ def main():
     # Rodapé
     st.divider()
     st.markdown(
-        "<p style='text-align: center; color: #888;'>Extrator SPED v4.2 (Fix Dispatcher) | Suporte Multi-EFD</p>",
+        "<p style='text-align: center; color: #888;'>Extrator SPED v4.3 (Fix Column Names) | Suporte Multi-EFD</p>",
         unsafe_allow_html=True
     )
 

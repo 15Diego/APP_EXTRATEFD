@@ -1007,64 +1007,12 @@ class SpedParser:
             
         base_columns = self.layouts[code]
         
-        # Adiciona colunas de índice conforme o tipo
-        if code == 'C010':
-            return base_columns + ['C010_INDEX']
-        elif code == 'C100':
-            return base_columns + ['C100_INDEX', 'C010_INDEX']
-        elif code in ('C170', 'C190', 'C195', 'C197'):
-            return base_columns + ['C100_INDEX']
-        
-        elif code == 'D010':
-            return base_columns + ['D010_INDEX']
-        elif code == 'D100':
-            return base_columns + ['D100_INDEX', 'D010_INDEX']
-        elif code in ('D170', 'D190', 'D101', 'D105'):
-            return base_columns + ['D100_INDEX']
-        
-        elif code == 'A010':
-            return base_columns + ['A010_INDEX']
-        elif code == 'A100':
-            return base_columns + ['A100_INDEX', 'A010_INDEX']
-        
-        elif code == 'F010':
-            return base_columns + ['F010_INDEX']
-        elif code == 'F100':
-            return base_columns + ['F100_INDEX', 'F010_INDEX']
-        elif code == 'F111':
-            return base_columns + ['F100_INDEX']
-
-        # Bloco E: adiciona índices específicos
-        elif code == 'E100':
-            return base_columns + ['E100_INDEX']
-        elif code == 'E110':
-            return base_columns + ['E110_INDEX', 'E100_INDEX']
-        elif code in ('E111', 'E112', 'E113', 'E115', 'E116'):
-            return base_columns + ['E110_INDEX']
-
-        # Bloco C500
-        elif code == 'C500':
-            return base_columns + ['C500_INDEX', 'C010_INDEX']
-        elif code in ('C501', 'C505'):
-            return base_columns + ['C500_INDEX']
-
-        # Bloco D500
-        elif code == 'D500':
-            return base_columns + ['D500_INDEX', 'D010_INDEX']
-        elif code in ('D501', 'D505'):
-            return base_columns + ['D500_INDEX']
-
-        # Bloco D700
-        elif code == 'D700':
-            return base_columns + ['D700_INDEX', 'D010_INDEX']
-        
-        else:
-            # Tenta usar configuração dinâmica
-            if code in self.record_actions:
-                extra_cols = [action['col'] for action in self.record_actions[code]]
-                return base_columns + extra_cols
+        # Usa configuração dinâmica de ações para determinar colunas extras de índice
+        if code in self.record_actions:
+            extra_cols = [action['col'] for action in self.record_actions[code]]
+            return base_columns + extra_cols
             
-            return base_columns
+        return base_columns
 
 
 # =========================
