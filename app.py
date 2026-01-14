@@ -14,7 +14,7 @@ import os
 
 # Importa módulos do projeto
 from exceptions import SpedError
-from Extrat_V3 import SpedParser, SpedDataProcessor
+from sped_parser import SpedParser, SpedDataProcessor
 
 # Importa layouts específicos
 from layouts_icms_ipi import LAYOUTS_ICMS_IPI, NUMERIC_COLUMNS_ICMS_IPI, GROUPS_ICMS_IPI
@@ -358,7 +358,7 @@ def main():
     # Rodapé
     st.divider()
     st.markdown(
-        "<p style='text-align: center; color: #888;'>Extrator SPED v4.4 (Debug Mode) | Suporte Multi-EFD</p>",
+        "<p style='text-align: center; color: #888;'>Extrator SPED v4.5 (New Engine) | Suporte Multi-EFD</p>",
         unsafe_allow_html=True
     )
 
