@@ -145,13 +145,32 @@ def process_sped_file(uploaded_file, efd_type: str) -> dict:
             
             if not consolidated_df.empty:
                 # Anexa cabeçalho se existir
+                # Anexa cabeçalho se existir
                 if header_code in dataframes and not dataframes[header_code].empty:
-                    consolidated_df = SpedDataProcessor.attach_header(
-                        consolidated_df,
-                        dataframes.get(header_code),
-                        header_idx,
-                        f'{header_code}_'
-                    )
+                    header_df = dataframes.get(header_code)
+                    
+                    # --- DEBUG VISUAL: Remover em produção ---
+                    # st.warning(f"DEBUG: Tentando anexar cabeçalho {header_code} em {parent_code}")
+                    # st.write(f"Colunas Consolidado ({len(consolidated_df.columns)}):", consolidated_df.columns.tolist())
+                    # st.write(f"Colunas Header ({len(header_df.columns)}):", header_df.columns.tolist())
+                    # ----------------------------------------
+                    
+                    try:
+                        consolidated_df = SpedDataProcessor.attach_header(
+                            consolidated_df,
+                            header_df,
+                            header_idx,
+                            f'{header_code}_'
+                        )
+                    except KeyError as e:
+                        st.error(f"Erro ao anexar cabeçalho {header_code}: Coluna {e} não encontrada.")
+                        st.text(f"Colunas disponíveis no consolidado: {consolidated_df.columns.tolist()}")
+                        st.text(f"Colunas disponíveis no {header_code}: {header_df.columns.tolist()}")
+                        # Não quebra, segue sem cabeçalho
+                        pass
+                    except Exception as e:
+                        st.error(f"Erro inesperado no cabeçalho: {e}")
+                        pass
                 
                 # Remove colunas de índice
                 consolidated_df.drop(
@@ -339,7 +358,7 @@ def main():
     # Rodapé
     st.divider()
     st.markdown(
-        "<p style='text-align: center; color: #888;'>Extrator SPED v4.3 (Fix Column Names) | Suporte Multi-EFD</p>",
+        "<p style='text-align: center; color: #888;'>Extrator SPED v4.4 (Debug Mode) | Suporte Multi-EFD</p>",
         unsafe_allow_html=True
     )
 
