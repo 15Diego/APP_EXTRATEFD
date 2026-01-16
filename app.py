@@ -138,6 +138,10 @@ def process_sped_file(uploaded_file, efd_type: str) -> dict:
             if parent_code not in dataframes or dataframes[parent_code].empty:
                 continue
                 
+            # DEBUG: Mostrar qual arquivo está sendo usado (remover depois)
+            import sped_parser
+            st.text(f"Engine file: {sped_parser.__file__}")
+
             consolidated_df = SpedDataProcessor.consolidate_group(
                 dataframes, parent_code, child_codes, parent_idx,
                 numeric_columns=numeric_cols
