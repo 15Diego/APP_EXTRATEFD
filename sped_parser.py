@@ -1145,7 +1145,7 @@ class SpedDataProcessor:
                 df['DT_E_S_DATE'] = pd.to_datetime(df['DT_E_S'], format='%Y%m%d', errors='coerce')
     
     @staticmethod
-    def consolidate_group(
+    def consolidate_group_new(
         dataframes: Dict[str, pd.DataFrame],
         parent_code: str,
         child_codes: List[str],
@@ -1170,6 +1170,13 @@ class SpedDataProcessor:
         """
         if parent_code not in dataframes or dataframes[parent_code].empty:
             return pd.DataFrame()
+
+        # DEBUG VISUAL
+        try:
+            import streamlit as st
+            st.toast(f"Consolidando {parent_code} com MERGE (V4.6 NEW)!", icon="🚀")
+        except:
+            pass
         
         # Prepara resultado inicial (apenas pai)
         result = dataframes[parent_code].copy().reset_index(drop=True)
@@ -1401,7 +1408,7 @@ class SpedProcessor:
         
         for group_name, (parent_code, child_codes, parent_idx, header_idx, header_code) in GROUPS.items():
             # Consolida filhos
-            consolidated_df = SpedDataProcessor.consolidate_group(
+            consolidated_df = SpedDataProcessor.consolidate_group_new(
                 dataframes, parent_code, child_codes, parent_idx
             )
             

@@ -142,7 +142,7 @@ def process_sped_file(uploaded_file, efd_type: str) -> dict:
             import sped_parser
             st.text(f"Engine file: {sped_parser.__file__}")
 
-            consolidated_df = SpedDataProcessor.consolidate_group(
+            consolidated_df = SpedDataProcessor.consolidate_group_new(
                 dataframes, parent_code, child_codes, parent_idx,
                 numeric_columns=numeric_cols
             )
