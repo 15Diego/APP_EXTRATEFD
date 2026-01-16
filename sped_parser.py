@@ -1153,58 +1153,61 @@ class SpedDataProcessor:
         numeric_columns: Dict[str, List[str]] = None
     ) -> pd.DataFrame:
         """
-        Consolida registros filhos com o registro pai.
+        Consolida registros filhos com o registro pai (1-para-N).
+        
+        Diferente da versão anterior que agrupava, esta versão faz um LEFT JOIN,
+        gerando uma linha para cada registro filho e repetindo os dados do pai.
 
         Args:
             dataframes: Dicionário com DataFrames
             parent_code: Código do registro pai
             child_codes: Lista de códigos dos registros filhos
             parent_index_col: Nome da coluna de índice do pai
-            numeric_columns: Dicionário opcional de colunas numéricas por registro.
-                            Se None, usa NUMERIC_COLUMNS interno.
+            numeric_columns: (Não utilizado na nova lógica de merge, mantido para compatibilidade)
 
         Returns:
-            DataFrame consolidado
+            DataFrame consolidado com explosão de linhas
         """
         if parent_code not in dataframes or dataframes[parent_code].empty:
             return pd.DataFrame()
         
-        # Usa colunas numéricas externas ou internas
-        num_cols_map = numeric_columns if numeric_columns is not None else NUMERIC_COLUMNS
-        
+        # Prepara resultado inicial (apenas pai)
         result = dataframes[parent_code].copy().reset_index(drop=True)
+        
+        # Garante tipo str no índice do pai
+        if parent_index_col in result.columns:
+            result[parent_index_col] = result[parent_index_col].astype(str)
         
         for code in child_codes:
             child = dataframes.get(code)
             if child is None or child.empty:
                 continue
             
-            # Define agregações
-            numeric_cols = num_cols_map.get(code, [])
-            text_cols = [
-                c for c in child.columns
-                if c not in numeric_cols + ['REG', parent_index_col]
-            ]
+            child = child.copy()
             
-            aggregations = {c: 'sum' for c in numeric_cols if c in child.columns}
-            for c in text_cols:
-                aggregations[c] = concat_unique_values
-            
-            if not aggregations:
-                continue
-            
-            # Agrupa e junta
-            # Garante que a coluna de agrupamento seja do mesmo tipo para evitar erros de merge
+            # Garante tipo str no índice do filho
             if parent_index_col in child.columns:
                 child[parent_index_col] = child[parent_index_col].astype(str)
+            else:
+                # Se filho não tem a chave do pai, não dá pra juntar
+                continue
             
-            grouped = child.groupby(parent_index_col).agg(aggregations).add_prefix(f'{code}_')
+            # Seleciona colunas para manter (exceto chaves e REG)
+            keep_cols = [c for c in child.columns if c not in ['REG', parent_index_col]]
             
-            # Garante tipo no result também
-            if parent_index_col in result.columns:
-                result[parent_index_col] = result[parent_index_col].astype(str)
-                
-            result = result.merge(grouped, how='left', left_on=parent_index_col, right_index=True)
+            if not keep_cols:
+                continue
+
+            # Renomeia colunas do filho com prefixo para evitar colisão
+            rename_map = {c: f'{code}_{c}' for c in keep_cols}
+            
+            # Prepara dataframe do filho para o merge
+            # Mantém parent_index_col para usar como chave
+            child_to_merge = child[[parent_index_col] + keep_cols].rename(columns=rename_map)
+            
+            # Faz o Merge (Left Join)
+            # Isso vai multiplicar as linhas do pai para cada linha do filho (Explosão)
+            result = result.merge(child_to_merge, how='left', on=parent_index_col)
         
         return result
     
