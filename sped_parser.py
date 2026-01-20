@@ -1170,13 +1170,6 @@ class SpedDataProcessor:
         """
         if parent_code not in dataframes or dataframes[parent_code].empty:
             return pd.DataFrame()
-
-        # DEBUG VISUAL
-        try:
-            import streamlit as st
-            st.toast(f"Consolidando {parent_code} com MERGE (V4.6 NEW)!", icon="🚀")
-        except:
-            pass
         
         # Prepara resultado inicial (apenas pai)
         result = dataframes[parent_code].copy().reset_index(drop=True)
