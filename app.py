@@ -1,825 +1,508 @@
-"""
-Extrator SPED - Aplicação Web Streamlit v5.0
+"""Extrator SPED v6 — an explicit, session-local review workflow."""
 
-Interface web para processamento de arquivos SPED e exportação para Excel.
-Suporta EFD ICMS/IPI e EFD Contribuições.
-
-Versão 5.0 - Novas funcionalidades:
-- Dashboard de Métricas com gráficos interativos
-- Filtros Avançados (período, CFOP, operação)
-- Preview de Dados com tabs por bloco
-- Upload em Lote de múltiplos arquivos
-"""
-
-import streamlit as st
+from decimal import Decimal
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from pathlib import Path
-from io import BytesIO
-import tempfile
-import os
-from typing import Dict, List, Tuple, Optional
-from datetime import datetime
+import streamlit as st
+from schema import TYPES
+from sped_parser import (
+    process_batch,
+    filter_documents,
+    calculate_totals,
+    conflicting_files,
+    get_config,
+)
+from export import export_workbook
+from demo import sample_file
 
-# Importa módulos do projeto
-from exceptions import SpedError
-from sped_parser import SpedParser, SpedDataProcessor
-
-# Importa layouts específicos
-from layouts_icms_ipi import LAYOUTS_ICMS_IPI, NUMERIC_COLUMNS_ICMS_IPI, GROUPS_ICMS_IPI
-from layouts_contribuicoes import LAYOUTS_CONTRIBUICOES, NUMERIC_COLUMNS_CONTRIBUICOES, GROUPS_CONTRIBUICOES
-
-# =========================
-# CONFIGURAÇÃO DA PÁGINA
-# =========================
-
-st.set_page_config(
-    page_title="Extrator SPED v5.0",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded"
+st.set_page_config(page_title="Extrator SPED · Workspace fiscal", page_icon="◈", layout="wide")
+st.markdown(
+    """<style>
+.stApp {background:#f5f7fa;color:#20333b;}
+.block-container {max-width:1440px;padding-top:4.5rem;padding-bottom:3rem;}
+[data-testid="stSidebar"] {background:#142f37;}
+[data-testid="stSidebar"] * {color:#f2f7f8;}
+[data-testid="stSidebar"] input {color:#142f37;}
+[data-testid="stSidebar"] button p {color:#142f37;}
+.brand {font-size:1.5rem;font-weight:750;letter-spacing:-.04em;margin-bottom:3px;}
+.eyebrow {color:#21766c;font-size:.76rem;font-weight:750;letter-spacing:.12em;text-transform:uppercase;}
+.hero {font-size:2.35rem;font-weight:750;letter-spacing:-.055em;line-height:1.15;margin:10px 0;}
+.lede {color:#596d77;font-size:1rem;line-height:1.6;max-width:740px;}
+.side-note {font-size:.85rem;line-height:1.6;opacity:.8;}
+[data-testid="stMetric"] {background:white;border:1px solid #dce5e9;border-radius:12px;padding:18px 20px;}
+[data-testid="stMetricValue"] {font-size:1.7rem;}
+.stTabs [data-baseweb="tab-list"] {gap:1rem;}
+.stTabs [aria-selected="true"] {color:#147969;font-weight:700;}
+button[kind="primary"] {background:#147969;border-color:#147969;}
+button:focus-visible,input:focus-visible {outline:3px solid #d49b23!important;outline-offset:3px;}
+.step {background:white;border:1px solid #dce5e9;border-radius:12px;padding:24px;min-height:160px;}
+.step b {display:block;font-size:1.1rem;margin:8px 0;}
+.step p {color:#60747e;font-size:.94rem;line-height:1.5;}
+@media(max-width:700px){.hero{font-size:1.8rem}.block-container{padding:4.5rem 1rem 1rem}[data-testid="stMetricValue"]{font-size:1.3rem}}
+</style>""",
+    unsafe_allow_html=True,
 )
 
-# CSS customizado
-st.markdown("""
-<style>
-    .main-header {
-        font-size: 2.5rem;
-        font-weight: bold;
-        background: linear-gradient(90deg, #1E88E5, #5E35B1);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        text-align: center;
-        margin-bottom: 0.5rem;
-    }
-    .sub-header {
-        font-size: 1.1rem;
-        color: #666;
-        text-align: center;
-        margin-bottom: 2rem;
-    }
-    .success-box {
-        padding: 1rem;
-        background-color: #E8F5E9;
-        border-radius: 0.5rem;
-        border-left: 4px solid #4CAF50;
-    }
-    .info-box {
-        padding: 1rem;
-        background-color: #E3F2FD;
-        border-radius: 0.5rem;
-        border-left: 4px solid #2196F3;
-    }
-    .warning-box {
-        padding: 1rem;
-        background-color: #FFF3E0;
-        border-radius: 0.5rem;
-        border-left: 4px solid #FF9800;
-    }
-    .metric-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 1.5rem;
-        border-radius: 1rem;
-        color: white;
-        text-align: center;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-    }
-    .stProgress > div > div > div > div {
-        background: linear-gradient(90deg, #4CAF50, #8BC34A);
-    }
-    .block-container {
-        padding-top: 2rem;
-    }
-    div[data-testid="stMetricValue"] {
-        font-size: 1.8rem;
-    }
-</style>
-""", unsafe_allow_html=True)
+
+def money(value):
+    return "R$ " + f"{value:,.2f}".replace(",", "_").replace(".", ",").replace("_", ".")
 
 
-# =========================
-# FUNÇÕES AUXILIARES
-# =========================
-
-def detect_efd_type(file_content: bytes) -> str:
-    """Detecta automaticamente o tipo de EFD pelo registro 0000."""
-    try:
-        content = file_content.decode('latin-1', errors='ignore')
-        for line in content.split('\n')[:10]:
-            if '|0000|' in line:
-                if '|A001|' in content or '|M100|' in content:
-                    return 'CONTRIBUICOES'
-                return 'ICMS_IPI'
-        return 'ICMS_IPI'
-    except:
-        return 'ICMS_IPI'
+def display_table(df):
+    """Convert Decimal for presentation only; calculations and exports retain precision."""
+    frame = df.copy()
+    for col in frame.columns:
+        frame[col] = frame[col].map(lambda v: float(v) if isinstance(v, Decimal) else v)
+    return frame
 
 
-def get_layout_config(efd_type: str):
-    """Retorna configuração de layout baseado no tipo de EFD."""
-    if efd_type == 'CONTRIBUICOES':
-        return LAYOUTS_CONTRIBUICOES, NUMERIC_COLUMNS_CONTRIBUICOES, GROUPS_CONTRIBUICOES
-    return LAYOUTS_ICMS_IPI, NUMERIC_COLUMNS_ICMS_IPI, GROUPS_ICMS_IPI
+def clear_filters():
+    for key in list(st.session_state):
+        if key.startswith("f_") or key.startswith("page_") or key.startswith("export_"):
+            del st.session_state[key]
 
 
-def format_currency(value: float) -> str:
-    """Formata valor como moeda brasileira."""
-    return f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+def reset_workspace():
+    clear_filters()
+    st.session_state.pop("batch", None)
+    st.session_state.pop("demo_mode", None)
+    st.session_state.pop("rejected_report", None)
+    st.session_state["upload_epoch"] = st.session_state.get("upload_epoch", 0) + 1
 
 
-# =========================
-# PROCESSAMENTO
-# =========================
-
-def process_sped_file(uploaded_file, efd_type: str) -> Tuple[dict, dict, object]:
-    """
-    Processa um arquivo SPED e retorna os DataFrames consolidados e brutos.
-    """
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.txt') as tmp:
-        tmp.write(uploaded_file.getvalue())
-        tmp_path = Path(tmp.name)
-    
-    try:
-        layouts, numeric_cols, groups = get_layout_config(efd_type)
-        
-        parser = SpedParser(tmp_path, layouts=layouts, numeric_columns=numeric_cols, groups=groups)
-        dataframes = parser.parse()
-        
-        dataframes = SpedDataProcessor.convert_dataframes(dataframes)
-        
-        consolidated = {}
-        
-        for group_name, group_config in groups.items():
-            parent_code, child_codes, parent_idx, header_idx, header_code = group_config
-            
-            if parent_code not in dataframes or dataframes[parent_code].empty:
-                continue
-            
-            consolidated_df = SpedDataProcessor.consolidate_group_new(
-                dataframes, parent_code, child_codes, parent_idx,
-                numeric_columns=numeric_cols
-            )
-            
-            if not consolidated_df.empty:
-                if header_code in dataframes and not dataframes[header_code].empty:
-                    header_df = dataframes.get(header_code)
-                    try:
-                        consolidated_df = SpedDataProcessor.attach_header(
-                            consolidated_df,
-                            header_df,
-                            header_idx,
-                            f'{header_code}_'
-                        )
-                    except Exception:
-                        pass
-                
-                consolidated_df.drop(
-                    columns=[parent_idx, header_idx],
-                    errors='ignore',
-                    inplace=True
-                )
-            
-            consolidated[f'{group_name}_CONSOLIDADO'] = consolidated_df
-        
-        return consolidated, dataframes, parser.metrics
-        
-    finally:
-        if tmp_path.exists():
-            os.unlink(tmp_path)
+def set_batch(batch, demo=False):
+    clear_filters()
+    st.session_state["batch"] = batch
+    st.session_state["demo_mode"] = demo
 
 
-def apply_filters(df: pd.DataFrame, filters: dict) -> pd.DataFrame:
-    """
-    Aplica filtros ao DataFrame.
-    """
-    filtered_df = df.copy()
-    
-    # Filtro por período
-    if filters.get('dt_inicio') and 'DT_DOC' in filtered_df.columns:
-        try:
-            filtered_df['DT_DOC_PARSED'] = pd.to_datetime(
-                filtered_df['DT_DOC'], format='%d%m%Y', errors='coerce'
-            )
-            filtered_df = filtered_df[
-                filtered_df['DT_DOC_PARSED'] >= pd.to_datetime(filters['dt_inicio'])
-            ]
-            filtered_df = filtered_df.drop(columns=['DT_DOC_PARSED'])
-        except:
-            pass
-    
-    if filters.get('dt_fim') and 'DT_DOC' in filtered_df.columns:
-        try:
-            filtered_df['DT_DOC_PARSED'] = pd.to_datetime(
-                filtered_df['DT_DOC'], format='%d%m%Y', errors='coerce'
-            )
-            filtered_df = filtered_df[
-                filtered_df['DT_DOC_PARSED'] <= pd.to_datetime(filters['dt_fim'])
-            ]
-            filtered_df = filtered_df.drop(columns=['DT_DOC_PARSED'])
-        except:
-            pass
-    
-    # Filtro por CFOP
-    if filters.get('cfops') and 'CFOP' in filtered_df.columns:
-        filtered_df = filtered_df[filtered_df['CFOP'].isin(filters['cfops'])]
-    
-    # Filtro por tipo de operação
-    if filters.get('ind_oper') is not None and 'IND_OPER' in filtered_df.columns:
-        filtered_df = filtered_df[filtered_df['IND_OPER'] == filters['ind_oper']]
-    
-    # Filtro por CNPJ participante
-    if filters.get('cnpj_part') and 'COD_PART' in filtered_df.columns:
-        filtered_df = filtered_df[
-            filtered_df['COD_PART'].str.contains(filters['cnpj_part'], na=False)
-        ]
-    
-    return filtered_df
-
-
-def process_multiple_files(uploaded_files: list, efd_type: str, progress_bar) -> Tuple[dict, dict, list]:
-    """
-    Processa múltiplos arquivos SPED.
-    """
-    all_consolidated = {}
-    all_raw = {}
-    all_metrics = []
-    
-    for idx, uploaded_file in enumerate(uploaded_files):
-        progress_bar.progress(
-            (idx / len(uploaded_files)),
-            text=f"Processando {uploaded_file.name}..."
-        )
-        
-        consolidated, raw, metrics = process_sped_file(uploaded_file, efd_type)
-        
-        for key, df in consolidated.items():
-            if key not in all_consolidated:
-                all_consolidated[key] = df
-            else:
-                all_consolidated[key] = pd.concat([all_consolidated[key], df], ignore_index=True)
-        
-        for key, df in raw.items():
-            if key not in all_raw:
-                all_raw[key] = df
-            else:
-                all_raw[key] = pd.concat([all_raw[key], df], ignore_index=True)
-        
-        all_metrics.append({
-            'arquivo': uploaded_file.name,
-            'linhas': metrics.processed_lines,
-            'sucesso': metrics.taxa_sucesso,
-            'tempo': metrics.tempo_processamento
-        })
-    
-    progress_bar.progress(1.0, text="Concluído!")
-    
-    return all_consolidated, all_raw, all_metrics
-
-
-def create_excel_download(dataframes: dict) -> bytes:
-    """Cria arquivo Excel em memória para download."""
-    output = BytesIO()
-    
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        for sheet_name, df in dataframes.items():
-            if df is not None and not df.empty:
-                safe_name = sheet_name[:31]
-                df.to_excel(writer, sheet_name=safe_name, index=False)
-    
-    output.seek(0)
-    return output.getvalue()
-
-
-# =========================
-# DASHBOARD DE MÉTRICAS
-# =========================
-
-def render_dashboard(consolidated: dict, raw_dataframes: dict):
-    """Renderiza o dashboard de métricas."""
-    st.header("📊 Dashboard de Métricas")
-    
-    # Calcula totais
-    totals = calculate_totals(consolidated)
-    
-    # KPIs principais
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric(
-            label="📄 Total de Documentos",
-            value=f"{totals['total_docs']:,}",
-            delta=None
-        )
-    
-    with col2:
-        st.metric(
-            label="💰 Valor Total",
-            value=format_currency(totals['vl_total']),
-            delta=None
-        )
-    
-    with col3:
-        st.metric(
-            label="🏦 Total ICMS",
-            value=format_currency(totals['vl_icms']),
-            delta=None
-        )
-    
-    with col4:
-        st.metric(
-            label="📈 PIS + COFINS",
-            value=format_currency(totals['vl_pis'] + totals['vl_cofins']),
-            delta=None
-        )
-    
-    st.divider()
-    
-    # Gráficos
-    col_chart1, col_chart2 = st.columns(2)
-    
-    with col_chart1:
-        fig_cfop = create_cfop_chart(consolidated)
-        if fig_cfop:
-            st.plotly_chart(fig_cfop, use_container_width=True)
-    
-    with col_chart2:
-        fig_values = create_values_chart(totals)
-        if fig_values:
-            st.plotly_chart(fig_values, use_container_width=True)
-    
-    # Top participantes
-    fig_participants = create_top_participants_chart(consolidated)
-    if fig_participants:
-        st.plotly_chart(fig_participants, use_container_width=True)
-
-
-def calculate_totals(consolidated: dict) -> dict:
-    """Calcula totais dos dados consolidados."""
-    totals = {
-        'total_docs': 0,
-        'vl_total': 0.0,
-        'vl_icms': 0.0,
-        'vl_pis': 0.0,
-        'vl_cofins': 0.0
-    }
-    
-    for key, df in consolidated.items():
-        if df is None or df.empty:
-            continue
-        
-        totals['total_docs'] += len(df)
-        
-        if 'VL_DOC' in df.columns:
-            totals['vl_total'] += df['VL_DOC'].sum()
-        if 'VL_ICMS' in df.columns:
-            totals['vl_icms'] += df['VL_ICMS'].sum()
-        if 'VL_PIS' in df.columns:
-            totals['vl_pis'] += df['VL_PIS'].sum()
-        if 'VL_COFINS' in df.columns:
-            totals['vl_cofins'] += df['VL_COFINS'].sum()
-    
-    return totals
-
-
-def create_cfop_chart(consolidated: dict):
-    """Cria gráfico de barras por CFOP."""
-    cfop_data = []
-    
-    for key, df in consolidated.items():
-        if df is None or df.empty:
-            continue
-        if 'CFOP' in df.columns and 'VL_DOC' in df.columns:
-            grouped = df.groupby('CFOP')['VL_DOC'].sum().reset_index()
-            grouped['Bloco'] = key.replace('_CONSOLIDADO', '')
-            cfop_data.append(grouped)
-    
-    if not cfop_data:
-        return None
-    
-    all_cfop = pd.concat(cfop_data, ignore_index=True)
-    top_cfops = all_cfop.groupby('CFOP')['VL_DOC'].sum().nlargest(10).reset_index()
-    
-    fig = px.bar(
-        top_cfops,
-        x='CFOP',
-        y='VL_DOC',
-        title='🏷️ Top 10 CFOPs por Valor',
-        labels={'VL_DOC': 'Valor Total (R$)', 'CFOP': 'CFOP'},
-        color='VL_DOC',
-        color_continuous_scale='Blues'
-    )
-    
-    fig.update_layout(
-        showlegend=False,
-        height=400,
-        plot_bgcolor='rgba(0,0,0,0)',
-        paper_bgcolor='rgba(0,0,0,0)'
-    )
-    
-    return fig
-
-
-def create_values_chart(totals: dict):
-    """Cria gráfico de pizza com distribuição de valores."""
-    values = [totals['vl_icms'], totals['vl_pis'], totals['vl_cofins']]
-    labels = ['ICMS', 'PIS', 'COFINS']
-    
-    # Remove zeros
-    filtered = [(l, v) for l, v in zip(labels, values) if v > 0]
-    if not filtered:
-        return None
-    
-    labels, values = zip(*filtered)
-    
-    fig = px.pie(
-        values=values,
-        names=labels,
-        title='🎯 Distribuição de Tributos',
-        color_discrete_sequence=px.colors.qualitative.Set2,
-        hole=0.4
-    )
-    
-    fig.update_layout(
-        height=400,
-        plot_bgcolor='rgba(0,0,0,0)',
-        paper_bgcolor='rgba(0,0,0,0)'
-    )
-    
-    return fig
-
-
-def create_top_participants_chart(consolidated: dict):
-    """Cria gráfico de top participantes por valor."""
-    part_data = []
-    
-    for key, df in consolidated.items():
-        if df is None or df.empty:
-            continue
-        if 'COD_PART' in df.columns and 'VL_DOC' in df.columns:
-            grouped = df.groupby('COD_PART')['VL_DOC'].sum().reset_index()
-            part_data.append(grouped)
-    
-    if not part_data:
-        return None
-    
-    all_parts = pd.concat(part_data, ignore_index=True)
-    top_parts = all_parts.groupby('COD_PART')['VL_DOC'].sum().nlargest(10).reset_index()
-    
-    if top_parts.empty:
-        return None
-    
-    fig = px.bar(
-        top_parts,
-        x='VL_DOC',
-        y='COD_PART',
-        orientation='h',
-        title='👥 Top 10 Participantes por Valor',
-        labels={'VL_DOC': 'Valor Total (R$)', 'COD_PART': 'Código Participante'},
-        color='VL_DOC',
-        color_continuous_scale='Greens'
-    )
-    
-    fig.update_layout(
-        showlegend=False,
-        height=400,
-        yaxis={'categoryorder': 'total ascending'},
-        plot_bgcolor='rgba(0,0,0,0)',
-        paper_bgcolor='rgba(0,0,0,0)'
-    )
-    
-    return fig
-
-
-# =========================
-# PREVIEW DE DADOS
-# =========================
-
-def render_data_preview(consolidated: dict, raw_dataframes: dict, filters: dict):
-    """Renderiza preview dos dados em tabs."""
-    st.header("📋 Preview dos Dados")
-    
-    # Cria tabs para cada bloco consolidado
-    tabs_names = []
-    tabs_data = []
-    
-    for key, df in consolidated.items():
-        if df is not None and not df.empty:
-            filtered_df = apply_filters(df, filters)
-            tabs_names.append(f"{key.replace('_CONSOLIDADO', '')} ({len(filtered_df):,})")
-            tabs_data.append((key, filtered_df))
-    
-    if not tabs_names:
-        st.warning("Nenhum dado consolidado para exibir.")
+def paginate(df, key, columns=None):
+    if df.empty:
+        st.info("Nenhum registro nesta seleção. Ajuste os filtros ou consulte a qualidade do lote.")
         return
-    
-    tabs = st.tabs(tabs_names)
-    
-    for tab, (key, df) in zip(tabs, tabs_data):
-        with tab:
-            # Busca
-            search_term = st.text_input(
-                "🔍 Buscar nos dados:",
-                key=f"search_{key}",
-                placeholder="Digite para buscar em todas as colunas..."
-            )
-            
-            if search_term:
-                mask = df.astype(str).apply(
-                    lambda x: x.str.contains(search_term, case=False, na=False)
-                ).any(axis=1)
-                display_df = df[mask]
-            else:
-                display_df = df
-            
-            # Paginação
-            page_size = 50
-            total_pages = max(1, len(display_df) // page_size + (1 if len(display_df) % page_size else 0))
-            
-            col1, col2, col3 = st.columns([1, 2, 1])
-            with col2:
-                page = st.number_input(
-                    f"Página (1-{total_pages})",
-                    min_value=1,
-                    max_value=total_pages,
-                    value=1,
-                    key=f"page_{key}"
-                )
-            
-            start_idx = (page - 1) * page_size
-            end_idx = start_idx + page_size
-            
-            st.dataframe(
-                display_df.iloc[start_idx:end_idx],
-                use_container_width=True,
-                height=400
-            )
-            
-            st.caption(f"Mostrando {min(end_idx, len(display_df)):,} de {len(display_df):,} registros")
+    if columns:
+        df = df[[c for c in columns if c in df]]
+    pages = max(1, (len(df) + 49) // 50)
+    state_key = f"page_{key}"
+    if st.session_state.get(state_key, 1) > pages:
+        st.session_state[state_key] = 1
+    page = st.number_input("Página", min_value=1, max_value=pages, step=1, key=state_key)
+    start = (page - 1) * 50
+    st.dataframe(display_table(df.iloc[start : start + 50]), hide_index=True, width="stretch")
+    st.caption(f"{start + 1}–{min(start + 50, len(df))} de {len(df):,} registros · 50 por página")
 
 
-# =========================
-# SIDEBAR COM FILTROS
-# =========================
-
-def render_sidebar() -> dict:
-    """Renderiza sidebar com configurações e filtros."""
-    with st.sidebar:
-        st.header("⚙️ Configurações")
-        
-        # Seletor de tipo EFD
-        efd_type = st.selectbox(
-            "Tipo de EFD",
-            options=["Detectar Automaticamente", "EFD ICMS/IPI (Fiscal)", "EFD Contribuições (PIS/COFINS)"],
-            index=0,
-            help="Selecione o tipo de arquivo EFD ou deixe detectar automaticamente"
+def render_import():
+    with st.expander("Importar arquivos", expanded="batch" not in st.session_state):
+        st.write(
+            "Selecione um ou mais arquivos. Cada EFD será identificada pelo próprio cabeçalho."
         )
-        
-        st.divider()
-        
-        # Filtros Avançados
-        st.header("🔍 Filtros")
-        
-        with st.expander("📅 Período", expanded=False):
-            dt_inicio = st.date_input(
-                "Data Inicial",
-                value=None,
-                key="filter_dt_inicio"
-            )
-            dt_fim = st.date_input(
-                "Data Final",
-                value=None,
-                key="filter_dt_fim"
-            )
-        
-        with st.expander("🏷️ CFOP", expanded=False):
-            cfop_input = st.text_input(
-                "CFOPs (separados por vírgula)",
-                placeholder="5102, 6102, 1102",
-                key="filter_cfop"
-            )
-            cfops = [c.strip() for c in cfop_input.split(",") if c.strip()] if cfop_input else []
-        
-        with st.expander("📊 Operação", expanded=False):
-            ind_oper = st.radio(
-                "Tipo de Operação",
-                options=["Todas", "Entrada (0)", "Saída (1)"],
-                index=0,
-                key="filter_oper"
-            )
-            ind_oper_value = None
-            if ind_oper == "Entrada (0)":
-                ind_oper_value = "0"
-            elif ind_oper == "Saída (1)":
-                ind_oper_value = "1"
-        
-        with st.expander("👤 Participante", expanded=False):
-            cnpj_part = st.text_input(
-                "CNPJ/Código do Participante",
-                placeholder="Digite parte do CNPJ ou código",
-                key="filter_cnpj"
-            )
-        
-        st.divider()
-        
-        st.header("ℹ️ Blocos Suportados")
-        
-        if efd_type == "EFD Contribuições (PIS/COFINS)":
-            st.markdown("""
-            - **Bloco 0**: Abertura
-            - **Bloco A**: Serviços (ISS)
-            - **Bloco C**: Docs Fiscais (NFe)
-            - **Bloco D**: Transportes
-            - **Bloco F**: Demais Docs
-            - **Bloco M**: Apuração PIS/COFINS
-            """)
-        else:
-            st.markdown("""
-            - **Bloco 0**: Abertura
-            - **Bloco C**: NFe/NFCe
-            - **Bloco D**: CTe
-            - **Bloco E**: Apuração ICMS/IPI
-            - **Bloco G**: CIAP
-            - **Bloco H**: Inventário
-            - **Bloco K**: Produção/Estoque
-            - **Bloco 1**: Outras Info
-            """)
-        
-        filters = {
-            'dt_inicio': dt_inicio,
-            'dt_fim': dt_fim,
-            'cfops': cfops,
-            'ind_oper': ind_oper_value,
-            'cnpj_part': cnpj_part if cnpj_part else None
+        files = st.file_uploader(
+            "Arquivos SPED",
+            type=["txt", "sped"],
+            accept_multiple_files=True,
+            key=f"uploads_{st.session_state.get('upload_epoch', 0)}",
+        )
+        a, b, c = st.columns([2, 2, 3])
+        kind = a.selectbox(
+            "Tipo de arquivo",
+            ["auto", *TYPES],
+            format_func=lambda v: "Detectar por arquivo" if v == "auto" else TYPES[v],
+        )
+        codec = b.selectbox(
+            "Codificação",
+            ["auto", "utf-8-sig", "cp1252", "latin-1"],
+            format_func=lambda v: "Automática" if v == "auto" else v,
+        )
+        strict = c.checkbox(
+            "Modo estrito",
+            help="Interrompe a aceitação de um arquivo se houver qualquer erro ou aviso. Os demais arquivos continuam sendo processados.",
+        )
+        st.caption(
+            f"Até {get_config('processing.max_files', 20)} arquivos · {get_config('processing.max_file_size_mb', 100)} MB por arquivo · {get_config('processing.max_batch_size_mb', 200)} MB por lote. O novo processamento substitui o lote da sessão."
+        )
+        if st.button("Processar arquivos", type="primary", disabled=not files):
+            reset_workspace()
+            try:
+                progress = st.progress(0, text="Preparando arquivos…")
+                with st.spinner("Lendo registros e verificando a qualidade…"):
+                    batch = process_batch(
+                        [(f.name, f.getvalue()) for f in files],
+                        kind,
+                        strict,
+                        codec,
+                        lambda fraction, name: progress.progress(fraction, text=f"Lendo {name}"),
+                    )
+                set_batch(batch)
+                st.rerun()
+            except (ValueError, OSError) as exc:
+                st.error(str(exc))
+
+
+def render_filters(batch):
+    manifest = batch.manifest
+    with st.container(border=True):
+        title, action = st.columns([5, 1])
+        title.markdown("**Refinar documentos**")
+        action.button("Limpar filtros", on_click=clear_filters, width="stretch")
+        a, b, c = st.columns(3)
+        kinds = sorted(manifest["TIPO_EFD"].unique())
+        kind = a.selectbox("Escrituração", kinds, format_func=lambda v: TYPES[v], key="f_type")
+        choices = manifest[manifest["TIPO_EFD"] == kind]
+        labels = {
+            r["ARQUIVO_ID"]: f"{r['ARQUIVO']} · {r['ARQUIVO_ID'][:6]}"
+            for r in choices.to_dict("records")
         }
-        
-        return efd_type, filters
+        if "f_files" in st.session_state:
+            st.session_state["f_files"] = [v for v in st.session_state["f_files"] if v in labels]
+        files = b.multiselect(
+            "Arquivos",
+            list(labels),
+            format_func=labels.get,
+            key="f_files",
+            placeholder="Todos desta escrituração",
+        )
+        operations = c.multiselect(
+            "Operação",
+            ["Entrada", "Saída", "Outra", "Não informada"],
+            key="f_operations",
+            placeholder="Todas as operações",
+        )
+        a, b, c, d = st.columns([1, 1, 2, 2])
+        start = a.date_input("De", value=None, key="f_start", format="DD/MM/YYYY")
+        end = b.date_input("Até", value=None, key="f_end", format="DD/MM/YYYY")
+        cfops = c.text_input("CFOPs", placeholder="1102, 5102", key="f_cfops")
+        search = d.text_input(
+            "Documento ou participante", placeholder="Número, nome, código ou CNPJ", key="f_search"
+        )
+        companies = sorted(
+            batch.documents.get("CNPJ_ESTABELECIMENTO", pd.Series(dtype=str)).dropna().unique()
+        )
+        a, b = st.columns([3, 2])
+        company = a.multiselect(
+            "Estabelecimentos",
+            companies,
+            key="f_companies",
+            placeholder="Todos os estabelecimentos",
+        )
+        include_cancelled = b.checkbox(
+            "Mostrar cancelados e denegados",
+            key="f_cancelled",
+            help="Esses registros ficam disponíveis para consulta, mas não entram nos indicadores.",
+        )
+        st.caption(
+            "CFOP seleciona documentos que contêm o código. Os valores continuam sendo do documento inteiro. Cada escrituração é analisada separadamente para evitar dupla contagem."
+        )
+    if start and end and start > end:
+        st.error("A data inicial deve ser anterior ou igual à data final.")
+        return None
+    selected = files or list(labels)
+    return {
+        "type": kind,
+        "files": selected,
+        "operations": operations,
+        "start": start,
+        "end": end,
+        "cfops": [v.strip() for v in cfops.split(",") if v.strip()],
+        "search": search,
+        "companies": company,
+        "include_cancelled": include_cancelled,
+    }
 
 
-# =========================
-# INTERFACE PRINCIPAL
-# =========================
+def render_overview(docs, conflicts):
+    if conflicts:
+        st.error(
+            "Há arquivos da mesma empresa e escrituração com períodos sobrepostos. Selecione apenas a versão desejada no filtro Arquivos para liberar os indicadores."
+        )
+        st.dataframe(pd.DataFrame(conflicts, columns=["Arquivo", "Sobreposto a"]), hide_index=True)
+        return
+    totals = calculate_totals(docs)
+    for column, label, key in zip(
+        st.columns(4),
+        [
+            "Documentos e operações",
+            "Valor dos documentos",
+            "ICMS informado",
+            "PIS + COFINS informado",
+        ],
+        ["documents", "value", "icms", "contributions"],
+    ):
+        value = totals["pis"] + totals["cofins"] if key == "contributions" else totals[key]
+        column.metric(label, f"{value:,}" if key == "documents" else money(value))
+    st.caption(
+        "Contagem por registro de documento/operação aceito, sem repetição por itens. Tributos informados no cabeçalho; não equivalem à apuração. Registros agregados e rejeitados não entram nestes indicadores."
+    )
+    if docs.empty:
+        st.info(
+            "Nada corresponde aos filtros atuais. Os registros completos continuam disponíveis na aba Registros."
+        )
+        return
+    valid = docs[~docs["CANCELADO"]].copy()
+    if valid.empty:
+        return
+    a, b = st.columns([3, 2])
+    with a:
+        st.markdown("#### Movimento no período")
+        grouped = (
+            valid.groupby("DATA", dropna=True)["VALOR"]
+            .agg(lambda s: sum((v for v in s if isinstance(v, Decimal)), Decimal(0)))
+            .reset_index()
+        )
+        grouped["VALOR"] = grouped["VALOR"].map(float)
+        fig = px.bar(
+            grouped,
+            x="DATA",
+            y="VALOR",
+            color_discrete_sequence=["#218575"],
+            labels={"DATA": "Data", "VALOR": "Valor (R$)"},
+        )
+        fig.update_layout(
+            height=310,
+            margin=dict(l=0, r=0, t=15, b=0),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            showlegend=False,
+        )
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+    with b:
+        st.markdown("#### Participantes por valor")
+        grouped = (
+            valid.groupby(
+                ["CNPJ_ESTABELECIMENTO", "PARTICIPANTE_ID", "PARTICIPANTE"], dropna=False
+            )["VALOR"]
+            .agg(lambda s: sum((v for v in s if isinstance(v, Decimal)), Decimal(0)))
+            .reset_index()
+        )
+        grouped["VALOR"] = grouped["VALOR"].map(float)
+        st.dataframe(
+            grouped.sort_values("VALOR", ascending=False).head(8)[["PARTICIPANTE", "VALOR"]],
+            column_config={
+                "PARTICIPANTE": "Participante",
+                "VALOR": st.column_config.NumberColumn("Valor (R$)", format="R$ %.2f"),
+            },
+            hide_index=True,
+            width="stretch",
+        )
+
 
 def main():
-    # Cabeçalho
-    st.markdown('<p class="main-header">📊 Extrator SPED v5.0</p>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">Processe arquivos SPED com Dashboard Interativo, Filtros e Preview</p>', unsafe_allow_html=True)
-    
-    # Sidebar
-    efd_type, filters = render_sidebar()
-    
-    # Área principal
-    col1, col2, col3 = st.columns([1, 3, 1])
-    
-    with col2:
-        # Upload de múltiplos arquivos
-        uploaded_files = st.file_uploader(
-            "📁 Selecione os arquivos SPED",
-            type=['txt', 'sped'],
-            help="Você pode selecionar múltiplos arquivos para processamento em lote",
-            accept_multiple_files=True
+    with st.sidebar:
+        st.markdown(
+            '<div class="brand">◈ extrator<span style="color:#73caba">.</span></div>',
+            unsafe_allow_html=True,
         )
-        
-        if uploaded_files:
-            total_size = sum(len(f.getvalue()) for f in uploaded_files) / 1024
-            
-            # Detecta tipo automaticamente se necessário
-            if efd_type == "Detectar Automaticamente":
-                detected_type = detect_efd_type(uploaded_files[0].getvalue())
-                type_label = "EFD ICMS/IPI" if detected_type == "ICMS_IPI" else "EFD Contribuições"
-                actual_type = detected_type
-            elif efd_type == "EFD ICMS/IPI (Fiscal)":
-                type_label = "EFD ICMS/IPI"
-                actual_type = "ICMS_IPI"
-            else:
-                type_label = "EFD Contribuições"
-                actual_type = "CONTRIBUICOES"
-            
-            # Info box
-            file_names = ", ".join([f.name for f in uploaded_files[:3]])
-            if len(uploaded_files) > 3:
-                file_names += f" e mais {len(uploaded_files) - 3} arquivo(s)"
-            
-            st.markdown(f"""
-            <div class="info-box">
-                <strong>📁 Arquivos:</strong> {len(uploaded_files)} selecionado(s)<br>
-                <strong>📄 Nomes:</strong> {file_names}<br>
-                <strong>📦 Tamanho Total:</strong> {total_size:.1f} KB<br>
-                <strong>🏷️ Tipo:</strong> {type_label}
-            </div>
-            """, unsafe_allow_html=True)
-            
-            st.divider()
-            
-            if st.button("🚀 Processar Arquivo(s)", type="primary", use_container_width=True):
-                with st.spinner("Processando arquivos SPED..."):
-                    try:
-                        progress_bar = st.progress(0, text="Iniciando...")
-                        
-                        consolidated, raw_dataframes, metrics_list = process_multiple_files(
-                            uploaded_files, actual_type, progress_bar
-                        )
-                        
-                        # Aplica filtros
-                        filtered_consolidated = {
-                            k: apply_filters(v, filters) for k, v in consolidated.items()
-                        }
-                        
-                        # Armazena no session_state
-                        st.session_state['consolidated'] = filtered_consolidated
-                        st.session_state['raw_dataframes'] = raw_dataframes
-                        st.session_state['metrics_list'] = metrics_list
-                        st.session_state['filters'] = filters
-                        
-                        # Resumo do processamento
-                        total_lines = sum(m['linhas'] for m in metrics_list)
-                        avg_success = sum(m['sucesso'] for m in metrics_list) / len(metrics_list)
-                        total_time = sum(m['tempo'] for m in metrics_list)
-                        
-                        st.markdown(f"""
-                        <div class="success-box">
-                            <h3>✅ Processamento Concluído!</h3>
-                            <p>
-                                <strong>Arquivos processados:</strong> {len(metrics_list)}<br>
-                                <strong>Linhas processadas:</strong> {total_lines:,}<br>
-                                <strong>Taxa de sucesso média:</strong> {avg_success:.2f}%<br>
-                                <strong>Tempo total:</strong> {total_time:.2f}s
-                            </p>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        
-                    except SpedError as e:
-                        st.error(f"❌ Erro ao processar arquivo: {e}")
-                    except Exception as e:
-                        st.error(f"❌ Erro inesperado: {e}")
-                        st.exception(e)
-    
-    # Exibe dashboard e preview se há dados processados
-    if 'consolidated' in st.session_state and st.session_state['consolidated']:
+        st.caption("SPED WORKSPACE / v6.0")
         st.divider()
-        
-        # Dashboard
-        render_dashboard(
-            st.session_state['consolidated'],
-            st.session_state.get('raw_dataframes', {})
+        st.markdown("**Seu fluxo de conferência**")
+        st.write("1 · Importe suas escriturações")
+        st.write("2 · Revise dados e ocorrências")
+        st.write("3 · Exporte com rastreabilidade")
+        st.divider()
+        st.markdown(
+            '<p class="side-note">Os dados ficam na sessão deste servidor. Não são enviados a serviços de IA nem compartilhados entre sessões pela aplicação.</p>',
+            unsafe_allow_html=True,
         )
-        
-        st.divider()
-        
-        # Preview
-        render_data_preview(
-            st.session_state['consolidated'],
-            st.session_state.get('raw_dataframes', {}),
-            st.session_state.get('filters', {})
+        st.button("Limpar sessão", on_click=reset_workspace, width="stretch")
+        st.caption("Em servidor compartilhado, configure autenticação na hospedagem e HTTPS.")
+    st.markdown(
+        '<div class="eyebrow">Workspace fiscal</div><div class="hero">Da escrituração à informação.</div><p class="lede">Explore seus arquivos SPED com documentos únicos, detalhes preservados e uma trilha clara até a origem.</p>',
+        unsafe_allow_html=True,
+    )
+    render_import()
+    batch = st.session_state.get("batch")
+    if batch is None:
+        st.write("")
+        for col, number, title, body in zip(
+            st.columns(3),
+            ["01", "02", "03"],
+            ["Importação inteligente", "Qualidade visível", "Excel organizado"],
+            [
+                "Identificação por arquivo e proteção contra duplicatas.",
+                "Erros, avisos e registros não suportados sempre à vista.",
+                "Documentos, detalhes e originais em abas separadas.",
+            ],
+        ):
+            col.markdown(
+                f'<div class="step"><span class="eyebrow">{number}</span><b>{title}</b><p>{body}</p></div>',
+                unsafe_allow_html=True,
+            )
+        st.write("")
+        st.info(
+            "Primeira vez por aqui? Explore uma demonstração com dados fictícios, sem precisar enviar arquivos."
         )
-        
-        st.divider()
-        
-        # Estatísticas e Download
-        st.header("📥 Exportar Dados")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("📊 Blocos Consolidados")
-            stats_data = []
-            for name, df in st.session_state['consolidated'].items():
-                if df is not None and not df.empty:
-                    stats_data.append({
-                        "Bloco": name,
-                        "Registros": len(df),
-                        "Colunas": len(df.columns)
-                    })
-            
-            if stats_data:
-                stats_df = pd.DataFrame(stats_data)
-                st.dataframe(stats_df, use_container_width=True, hide_index=True)
-            else:
-                st.warning("Nenhum bloco consolidado encontrado.")
-        
-        with col2:
-            st.subheader("⬇️ Download")
-            
-            excel_bytes = create_excel_download(st.session_state['consolidated'])
-            
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_name = f"sped_consolidado_{timestamp}.xlsx"
-            
+        if st.button("Explorar demonstração"):
+            set_batch(process_batch([("demonstracao.txt", sample_file())]), demo=True)
+            st.rerun()
+        return
+    if st.session_state.get("demo_mode"):
+        st.info("Modo demonstração · todos os dados abaixo são fictícios.")
+    if not batch.files:
+        st.error(
+            "Nenhum arquivo pôde ser aceito. Confira os motivos abaixo e envie uma nova seleção."
+        )
+        st.dataframe(batch.issues, hide_index=True, width="stretch")
+        if st.button("Preparar relatório de rejeições"):
+            try:
+                st.session_state["rejected_report"] = export_workbook(batch)
+            except ValueError as exc:
+                st.error(str(exc))
+        if "rejected_report" in st.session_state:
             st.download_button(
-                label="📥 Baixar Excel Consolidado",
-                data=excel_bytes,
-                file_name=output_name,
+                "Baixar relatório de rejeições",
+                st.session_state["rejected_report"],
+                "sped_rejeicoes.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        return
+    issues = batch.issues
+    if not issues.empty:
+        st.warning(
+            f"{len(issues):,} ocorrência(s) no lote. Consulte Qualidade antes de usar os resultados; registros rejeitados e não suportados ficam fora dos indicadores."
+        )
+    else:
+        st.success(
+            f"{len(batch.files)} arquivo(s) processado(s) sem ocorrências nas verificações implementadas."
+        )
+    filters = render_filters(batch)
+    if filters is None:
+        return
+    docs = filter_documents(batch, filters)
+    conflicts = conflicting_files(batch, filters["files"])
+    overview, documents, records, quality, download = st.tabs(
+        ["Visão geral", "Documentos", "Registros", "Qualidade", "Exportar"]
+    )
+    with overview:
+        render_overview(docs, conflicts)
+    with documents:
+        st.markdown("### Documentos da seleção")
+        paginate(
+            docs,
+            "documents",
+            [
+                "DATA",
+                "NUM_DOC",
+                "REGISTRO",
+                "OPERACAO",
+                "PARTICIPANTE",
+                "CNPJ_PARTICIPANTE",
+                "VALOR",
+                "CFOPS",
+                "CANCELADO",
+                "ARQUIVO",
+                "LINHA",
+            ],
+        )
+        if not docs.empty:
+            with st.expander("Inspecionar um documento e seus detalhes"):
+                choices = docs.set_index("DOCUMENTO_ID")
+                selected = st.selectbox(
+                    "Documento",
+                    list(choices.index),
+                    format_func=lambda v: f"{choices.loc[v, 'ARQUIVO']} · linha {choices.loc[v, 'LINHA']}",
+                    key="document_detail",
+                )
+                for f in batch.files:
+                    for code, table in f.tables.items():
+                        if "DOCUMENTO_ID" in table:
+                            detail = table[table["DOCUMENTO_ID"] == selected]
+                            if not detail.empty:
+                                st.markdown(f"**{code} · {len(detail)} registro(s)**")
+                                st.dataframe(
+                                    display_table(detail), hide_index=True, width="stretch"
+                                )
+    with records:
+        st.markdown("### Registros completos do lote")
+        st.caption(
+            "Esta área não usa os filtros de documentos. Inclui apuração, cadastros e registros sem documento associado."
+        )
+        a, b, c = st.columns(3)
+        file_index = a.selectbox(
+            "Arquivo de origem",
+            range(len(batch.files)),
+            format_func=lambda i: f"{batch.files[i].metadata['ARQUIVO']} · {batch.files[i].metadata['ARQUIVO_ID'][:6]}",
+        )
+        original = b.toggle(
+            "Ver conteúdo original",
+            value=False,
+            help="Inclui registros rejeitados, não suportados e campos adicionais.",
+        )
+        tables = batch.files[file_index].raw_tables if original else batch.files[file_index].tables
+        code = c.selectbox("Registro", sorted(tables))
+        if code:
+            search = st.text_input(
+                "Buscar neste registro",
+                key="record_search",
+                placeholder="Busca literal em qualquer coluna",
+            )
+            frame = tables[code]
+            if search:
+                frame = frame[
+                    frame.fillna("")
+                    .astype(str)
+                    .apply(lambda s: s.str.contains(search, case=False, regex=False))
+                    .any(axis=1)
+                ]
+            paginate(frame, f"record_{file_index}_{original}_{code}")
+    with quality:
+        st.markdown("### Qualidade e origem")
+        st.caption(
+            "Aceito significa que passou pelas verificações implementadas; não é uma homologação fiscal. O catálogo pode divergir de versões históricas ou recentes: essas linhas são preservadas para revisão."
+        )
+        st.dataframe(batch.manifest, hide_index=True, width="stretch")
+        if issues.empty:
+            st.success("Nenhuma ocorrência registrada neste lote.")
+        else:
+            levels = st.multiselect(
+                "Severidade", sorted(issues["NIVEL"].unique()), key="quality_levels"
+            )
+            paginate(issues[issues["NIVEL"].isin(levels)] if levels else issues, "quality")
+        all_conflicts = conflicting_files(batch)
+        if all_conflicts:
+            st.warning(
+                "Períodos sobrepostos detectados. Confira arquivos originais e retificadores antes de escolher quais analisar."
+            )
+            st.dataframe(
+                pd.DataFrame(all_conflicts, columns=["Arquivo", "Sobreposto a"]), hide_index=True
+            )
+    with download:
+        st.markdown("### Uma exportação para cada necessidade")
+        scope = st.radio(
+            "Escopo", ["Lote completo", "Documentos filtrados"], horizontal=True, key="export_scope"
+        )
+        filtered = scope == "Documentos filtrados"
+        st.caption(
+            "Lote completo inclui todas as linhas em abas de registros originais, além de documentos, registros aceitos, arquivos e ocorrências. Documentos filtrados inclui apenas a seleção atual."
+        )
+        fingerprint = repr((filters, scope, tuple(f.metadata["ARQUIVO_ID"] for f in batch.files)))
+        if st.session_state.get("export_fingerprint") != fingerprint:
+            st.session_state.pop("export_bytes", None)
+        if st.button(
+            "Preparar Excel", type="primary", disabled=filtered and (docs.empty or bool(conflicts))
+        ):
+            try:
+                with st.spinner("Organizando as abas do Excel…"):
+                    st.session_state["export_bytes"] = export_workbook(
+                        batch, docs if filtered else None, filtered
+                    )
+                    st.session_state["export_fingerprint"] = fingerprint
+            except (ValueError, OSError) as exc:
+                st.error(str(exc))
+        if "export_bytes" in st.session_state:
+            st.download_button(
+                "Baixar Excel",
+                st.session_state["export_bytes"],
+                file_name="sped_selecao.xlsx" if filtered else "sped_completo.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 type="primary",
-                use_container_width=True
             )
-    
-    # Rodapé
+        if filtered and docs.empty:
+            st.info(
+                "Não há documentos para exportar com estes filtros. O lote completo continua disponível."
+            )
     st.divider()
-    st.markdown(
-        "<p style='text-align: center; color: #888;'>Extrator SPED v5.0 | Dashboard + Filtros + Preview + Upload em Lote</p>",
-        unsafe_allow_html=True
+    st.caption(
+        "Extrator SPED v6 · Conferência com origem preservada · Verifique as ocorrências e valide a escrituração no PVA aplicável."
     )
 
 

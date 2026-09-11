@@ -28,9 +28,16 @@ Thumbs.db
 *.tmp
 *.temp
 
-# Test files
-test_*.py
-Teste.py
+# Local data and generated artifacts (never commit fiscal files)
+data/
+exports/
+*.xlsx
+.streamlit/secrets.toml
+.pytest_cache/
+.ruff_cache/
+coverage.xml
+.coverage
+htmlcov/
 
 # Old versions
 *.bak
