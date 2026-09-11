@@ -1,6 +1,5 @@
-streamlit>=1.28.0
-pandas>=2.0.0
-openpyxl>=3.1.0
-pyyaml>=6.0
-charset-normalizer>=3.0.0
-plotly>=5.18.0
+streamlit==1.63.0
+pandas==3.0.2
+openpyxl==3.1.5
+pyyaml==6.0.3
+plotly==7.0.0

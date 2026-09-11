@@ -1,248 +1,104 @@
-# Extrator SPED V3.0
+# Extrator SPED · v6.0
 
-Sistema avançado para extração e consolidação de dados de arquivos SPED (Sistema Público de Escrituração Digital) para formato Excel.
+Workspace web para conferir EFD ICMS/IPI e EFD Contribuições e exportar dados para Excel com origem preservada.
 
-## 📋 Características
+**Documentos aparecem uma vez. Detalhes ficam em tabelas separadas.** Linhas rejeitadas e registros fora do catálogo são preservados para revisão e não entram nos indicadores. Consulte [o escopo de validação](docs/VALIDATION.md) antes de usar os resultados.
 
-- **Processamento robusto**: Tratamento de erros aprimorado com exceções customizadas
-- **Validação de dados**: Validação de CNPJs, datas, campos obrigatórios e integridade referencial
-- **Performance otimizada**: Operações vetorizadas e processamento eficiente
-- **Métricas detalhadas**: Rastreamento completo do processamento com estatísticas
-- **Interface gráfica moderna**: GUI com barra de progresso e processamento assíncrono
-- **Configurável**: Arquivo YAML para personalização de parâmetros
-- **Testado**: Suite de testes unitários incluída
+## Executar localmente
 
-## 🚀 Instalação
+Requer Python 3.11 ou superior. Recomenda-se ambiente virtual dedicado.
 
-### Dependências
-
-```bash
-pip install pandas openpyxl pyyaml charset-normalizer pytest
+```sh
+python -m venv .venv
+# Windows PowerShell:
+.venv\Scripts\Activate.ps1
+# Linux/macOS: source .venv/bin/activate
+python -m pip install -r requirements.txt
+streamlit run app.py --server.address 127.0.0.1
 ```
 
-### Estrutura de Arquivos
+Abra o endereço exibido no terminal. Use **Explorar demonstração** para conhecer o fluxo com dados fictícios. A demonstração é uma amostra de extração e não uma escrituração pronta para transmissão.
 
-```
-V3.0/
-├── Extrat_V3.py          # Arquivo principal
-├── exceptions.py         # Exceções customizadas
-├── validators.py         # Validadores de dados
-├── metrics.py            # Sistema de métricas
-├── config.yaml           # Configurações
-├── test_extrat_v3.py     # Testes unitários
-└── README.md             # Este arquivo
-```
+## Fluxo de trabalho
 
-## 💻 Uso
+1. **Importar:** selecione TXT/SPED. O tipo é identificado pelo cabeçalho de cada arquivo, incluindo lotes mistos. A codificação automática tenta UTF-8, Windows-1252 e Latin-1; pode ser escolhida manualmente.
+2. **Conferir qualidade:** revise arquivos rejeitados, campos inválidos, diferenças de estrutura e registros não suportados. O modo estrito bloqueia um arquivo com qualquer ocorrência; os demais continuam.
+3. **Explorar documentos:** filtre por escrituração, arquivo, estabelecimento, período, operação, CFOP, número ou participante. Os filtros são imediatos. Limpar filtros restaura a seleção completa.
+4. **Inspecionar:** abra um documento para ver seus detalhes e vínculos ou consulte qualquer registro na área Registros.
+5. **Exportar:** prepare o Excel explicitamente. O download é invalidado quando a seleção muda, evitando baixar resultados de filtros anteriores.
 
-### Interface Gráfica (Recomendado)
+Arquivos idênticos são reconhecidos pelo SHA-256 e não são adicionados novamente. Arquivos distintos da mesma empresa, tipo e período sobreposto são mantidos para conferência, mas bloqueiam indicadores conjuntos. Selecione apenas a versão desejada em Arquivos. O sistema não escolhe automaticamente entre original e retificadora.
 
-```bash
-python Extrat_V3.py
-```
+Cada escrituração tem indicadores separados. O filtro CFOP seleciona documentos que contêm o código; **não rateia o valor da nota por CFOP**. A contagem inclui documentos/operações aceitos dos códigos definidos em `schema.DOCUMENTS`; não inclui apuração ou registros agregados como novas notas. Cancelados e denegados podem ser consultados, mas ficam fora dos indicadores. Tributos são valores informados nos cabeçalhos, não imposto apurado ou a recolher.
 
-Isso abrirá uma janela onde você pode:
-1. Selecionar um ou mais arquivos SPED (.txt)
-2. Escolher o local para salvar o Excel
-3. Clicar em "Processar Arquivos"
-4. Acompanhar o progresso na barra de status
+## Conteúdo do Excel
 
-### Linha de Comando
+| Aba | Conteúdo |
+|---|---|
+| LEIA_ME | Escopo e regras de interpretação |
+| DOCUMENTOS | Uma linha por documento/operação de origem |
+| ARQUIVOS | Empresa, período, hash, tipo, codificação e métricas |
+| OCORRENCIAS | Arquivo, linha, campo e motivo |
+| ARQUIVOS_REJEITADOS | Motivo e conteúdo em Base64 dos arquivos bloqueados durante o processamento |
+| REG_* | Registros interpretados e aceitos, com vínculos |
+| ORIG_* | Campos originais e texto da linha, inclusive rejeitados/não suportados |
 
-```bash
-# Arquivo único
-python Extrat_V3.py arquivo.txt --out saida.xlsx
+**Lote completo** inclui todas essas tabelas. **Documentos filtrados** inclui apenas documentos visíveis e a explicação do escopo. Registros completos não são filtrados pela seleção de documentos, para preservar cadastros e apuração sem vínculo a uma nota.
 
-# Múltiplos arquivos
-python Extrat_V3.py arquivo1.txt arquivo2.txt --out consolidado.xlsx
+`REGISTRO_ID` combina SHA-256 e linha. `PAI_ID` contém o pai explicitamente mapeado. `DOCUMENTO_ID` identifica a nota/operação de origem. Cada linha contém arquivo, tipo e estabelecimento.
 
-# Com nível de log customizado
-python Extrat_V3.py arquivo.txt --out saida.xlsx --log-level DEBUG
-```
+Campos textuais são gravados como texto, inclusive quando começam com `=`. Abas são divididas ao atingir o limite do Excel; campos longos são divididos em colunas numeradas para não truncar. Valores são Decimal no processamento; o Excel tem precisão numérica limitada, por isso as abas originais preservam o texto recebido.
 
-## 📊 Registros Suportados
+## Linha de comando
 
-### Bloco C - Documentos Fiscais I
-- **C100**: Nota Fiscal (modelo 1/1A)
-- **C170**: Itens do documento
-- **C190**: Registro analítico
-- **C500**: Nota Fiscal de Energia Elétrica
-- **C501/C505**: Detalhamento PIS/COFINS
-
-### Bloco D - Documentos Fiscais II
-- **D100**: Conhecimento de Transporte
-- **D170**: Itens do documento
-- **D500**: Nota Fiscal de Serviço de Comunicação
-- **D501/D505**: Detalhamento PIS/COFINS
-- **D700**: NFCom (Nota Fiscal Fatura Eletrônica)
-
-### Bloco A - Documentos Fiscais III
-- **A100**: Documento de Serviços
-
-### Bloco F - Demais Documentos
-- **F100**: Demais documentos e operações
-
-### Bloco M - Apuração de Contribuições
-- **M100/M105/M110/M115**: Créditos e ajustes
-
-### Bloco E - Apuração ICMS/IPI
-- **E100/E110**: Período e apuração
-- **E111/E112/E113/E115/E116**: Ajustes e detalhamentos
-
-## ⚙️ Configuração
-
-Edite o arquivo `config.yaml` para personalizar:
-
-```yaml
-processing:
-  max_file_size_mb: 100        # Tamanho máximo de arquivo
-  chunk_size: 10000            # Tamanho do chunk de processamento
-  validation_tolerance: 0.01   # Tolerância para validações
-
-validation:
-  validate_cnpj: true          # Validar CNPJs
-  validate_dates: true         # Validar datas
-  strict_mode: false           # Modo estrito (interrompe em erros)
-
-gui:
-  window_title: 'SPED → Excel - Extrator v3.0'
-  show_progress_bar: true      # Mostrar barra de progresso
+```sh
+python sped_parser.py arquivo.txt outro.txt --out resultado.xlsx
+python sped_parser.py arquivo.txt --out resultado.xlsx --strict
 ```
 
-## 🧪 Testes
+A exportação completa pode incluir arquivos com ocorrências. No modo estrito, arquivos com qualquer ocorrência ficam rejeitados. Falhas de arquivo resultam em saída não zero, mantendo o relatório dos demais e os motivos. O limite de tamanho é verificado antes da leitura na CLI.
 
-Execute a suite de testes:
+## Limites e operação
 
-```bash
-# Todos os testes
-pytest test_extrat_v3.py -v
+`config.yaml` centraliza os limites: 100 MB por arquivo, 200 MB por lote, 20 arquivos e 500 mil linhas por arquivo. A exportação tem limite de 5 milhões de células para evitar consumo descontrolado. Esses limites não constituem garantia de capacidade; dimensione o servidor com dados representativos.
 
-# Testes específicos
-pytest test_extrat_v3.py::TestValidators -v
-pytest test_extrat_v3.py::TestMetrics -v
+O processamento usa memória e é sequencial. Não há produto cartesiano entre tabelas filhas, banco de dados nem cache global de dados fiscais. O Excel é escrito em modo sequencial e preparado somente por solicitação. A sessão mantém o lote até ser limpa ou encerrada; o processo hospedeiro e seus administradores têm acesso à memória do servidor.
+
+Os dados não são enviados a APIs externas pela aplicação. Não inclua arquivos fiscais reais, planilhas ou segredos no Git; as pastas `data/`, `exports/` e `.streamlit/secrets.toml` são ignoradas.
+
+### Docker
+
+```sh
+docker build -t extrator-sped .
+docker run --rm -p 127.0.0.1:8501:8501 extrator-sped
 ```
 
-## 📈 Métricas de Processamento
+A imagem executa como usuário sem privilégios e oferece healthcheck. O Dockerfile deve ser construído e testado no ambiente de destino. Para disponibilizar a outras pessoas, configure autenticação no proxy/plataforma, HTTPS, restrição de rede, limites de memória e monitoramento. O aplicativo não implementa uma base própria de usuários. Não desative CORS ou proteção XSRF.
 
-O sistema rastreia automaticamente:
-- Total de linhas processadas
-- Taxa de sucesso
-- Erros por tipo
-- Registros por tipo
-- Tempo de processamento
-- Velocidade (linhas/segundo)
+## Desenvolvimento e testes
 
-Exemplo de saída:
-
-```
-============================================================
-RESUMO DO PROCESSAMENTO
-============================================================
-Arquivo: sped_exemplo.txt
-Total de linhas: 15,234
-Processadas com sucesso: 15,180
-Linhas com erro: 54
-Taxa de sucesso: 99.65%
-Tempo de processamento: 3.45s
-Velocidade: 4,400 linhas/segundo
-
-Top 10 Registros Processados:
-  C100: 1,234
-  C170: 5,678
-  D100: 234
-  ...
-============================================================
+```sh
+python -m pip install -r requirements-dev.txt
+ruff check .
+ruff format --check .
+pytest -q
 ```
 
-## 🔍 Validações Implementadas
+A CI executa os mesmos comandos em Python 3.11 e 3.14. As dependências diretas têm versões fixas. Os testes cobrem parsing, integridade, filtros, exportação, arquivos inválidos e interações Streamlit. Leia [CHANGELOG.md](CHANGELOG.md) para migração da v5.
 
-### Validação de Dados
-- **CNPJ**: Validação completa com dígitos verificadores
-- **Datas**: Verificação de formatos e valores válidos
-- **Campos numéricos**: Validação de formato brasileiro
-- **Chaves NFe**: Verificação de 44 dígitos
-- **CFOPs**: Validação de 4 dígitos
+| Arquivo | Responsabilidade |
+|---|---|
+| app.py | Interface, estado da sessão e apresentação |
+| sped_parser.py | Parsing, validação aplicada, lote, filtros e indicadores |
+| schema.py | Seleção de layout, campos numéricos e relações |
+| export.py | Excel seguro e preservação de conteúdo |
+| layouts_*.py | Catálogos de campos por escrituração |
+| validators.py | Validadores auxiliares e CNPJ numérico/alfanumérico |
+| demo.py | Amostra fictícia usada na demonstração e nos testes |
+| tests/ | Regressões e testes da interface |
 
-### Validação de Integridade
-- Campos obrigatórios por tipo de registro
-- Validação cruzada de totais (soma de itens vs total do documento)
-- Verificação de referências entre registros
+## Limites de validade
 
-## 🐛 Tratamento de Erros
+Não é um PVA, não consulta a SEFAZ e não assegura conformidade fiscal integral. A contagem de campos é comparada ao catálogo local: versões diferentes ficam visíveis como rejeições, sem descarte silencioso. Homologue os layouts e arquivos usados pela sua operação, inclusive arquivos retificadores, e compare os resultados com uma referência confiável. A atualização não foi testada com dados fiscais reais.
 
-O sistema utiliza exceções customizadas para melhor diagnóstico:
-
-- `SpedParseError`: Erros de parsing de linhas
-- `SpedValidationError`: Erros de validação de dados
-- `SpedFileError`: Problemas com arquivos
-- `SpedEncodingError`: Erros de encoding
-- `SpedIntegrityError`: Inconsistências de integridade
-
-## 📝 Formato de Saída
-
-O Excel gerado contém múltiplas planilhas:
-
-### Planilhas Consolidadas
-- `C_CONSOLIDADO`: Notas fiscais com itens agregados
-- `D_CONSOLIDADO`: CTes com itens agregados
-- `A_CONSOLIDADO`: Documentos de serviços
-- `F_CONSOLIDADO`: Demais documentos
-- `E_CONSOLIDADO`: Apuração ICMS/IPI
-
-### Planilhas Detalhadas
-- Registros principais (C100, D100, etc.)
-- Registros filhos (C170, D170, etc.)
-- Blocos de apuração (M100, M105, etc.)
-
-### Formatação
-- Valores monetários em formato R$ brasileiro
-- Datas convertidas para formato legível
-- Indicadores traduzidos (Entrada/Saída, etc.)
-
-## 🔧 Troubleshooting
-
-### Erro de encoding
-```
-SpedEncodingError: Falha ao detectar encoding
-```
-**Solução**: Verifique o encoding do arquivo ou ajuste `fallback_encodings` no config.yaml
-
-### Arquivo muito grande
-```
-SpedFileError: Arquivo muito grande: 150.00 MB (máximo: 100 MB)
-```
-**Solução**: Aumente `max_file_size_mb` no config.yaml
-
-### Validação falhou
-```
-SpedValidationError: Campos obrigatórios vazios: IND_EMIT, NUM_DOC
-```
-**Solução**: Corrija os dados ou desabilite `strict_mode` no config.yaml
-
-## 📄 Licença
-
-Este projeto é de uso interno. Todos os direitos reservados.
-
-## 👥 Suporte
-
-Para dúvidas ou problemas, consulte os logs gerados durante o processamento ou execute com `--log-level DEBUG` para mais detalhes.
-
-## 🔄 Changelog
-
-### v3.0 (Atual)
-- ✨ Exceções customizadas para melhor tratamento de erros
-- ✨ Sistema de validação completo (CNPJ, datas, campos)
-- ✨ Métricas detalhadas de processamento
-- ✨ Configuração via arquivo YAML
-- ✨ GUI com barra de progresso e processamento assíncrono
-- ✨ Suite de testes unitários
-- ⚡ Otimizações de performance
-- 📝 Documentação aprimorada
-
-### v2.0
-- Suporte a múltiplos blocos SPED
-- Consolidação de registros pai-filho
-- Interface gráfica básica
-
-### v1.0
-- Versão inicial com funcionalidades básicas
+Licenciamento mantido: uso interno, todos os direitos reservados.
